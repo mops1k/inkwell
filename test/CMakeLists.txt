@@ -124,3 +124,7 @@ add_subdirectory(dropbox)
 
 add_subdirectory(hal_file_lifecycle)
 add_subdirectory(panic_snapshot)
+
+# Shelf index (plan p_e2f3b165ca94, phase Ф1): real EPUB/FB2/XTC metadata over
+# real files, atomic on-SD JSON storage.
+add_subdirectory(shelf_index)

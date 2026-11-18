@@ -1742,6 +1742,10 @@ bool Fb2::isCompressedFb2() const {
   return true;
 }
 
+bool Fb2::transcodeSourceToUtf8(std::string& path, const std::string& tempPathBase, const ProgressFn& onProgress) {
+  return transcodeToUtf8IfNeeded(path, tempPathBase, onProgress);
+}
+
 bool Fb2::prepareSource(const ProgressFn& onProgress) {
   sourcePath = filepath;
   temporarySourcePath.clear();

@@ -55,6 +55,14 @@ class Fb2 {
   bool clearCache() const;
   void setupCacheDir() const;
 
+  // Decodes a legacy single-byte FB2 source (Windows-1251, KOI8-R) into a UTF-8
+  // temp file next to `tempPathBase` and rewrites `path` to it; leaves `path`
+  // untouched for UTF-8/ASCII. Returns false only on I/O or heap failure.
+  // Exposed so readers that do NOT convert the book to a package (the shelf
+  // indexer) can decode metadata through the same table instead of copying it.
+  static bool transcodeSourceToUtf8(std::string& path, const std::string& tempPathBase,
+                                    const ProgressFn& onProgress = nullptr);
+
   [[nodiscard]] const std::string& getPath() const { return filepath; }
   [[nodiscard]] const std::string& getCachePath() const { return cachePath; }
   [[nodiscard]] const std::string& getPackagePath() const { return packagePath; }

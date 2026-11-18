@@ -5,12 +5,14 @@
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -154,7 +156,19 @@ class HalFile : public Print {
     return 0;
   }
   bool rename(const char*) { return false; }
-  bool getModifyDateTime(uint16_t*, uint16_t*) { return false; }
+  // FAT-style (date << 16) | time, derived from the host mtime. Shelf indexing
+  // change-detection relies on it, so the test filesystem must provide it.
+  bool getModifyDateTime(uint16_t* pdate, uint16_t* ptime) {
+    struct stat fileStat {};
+    if (path_.empty() || ::stat(path_.c_str(), &fileStat) != 0) return false;
+    struct tm local {};
+    localtime_r(&fileStat.st_mtime, &local);
+    const auto date = static_cast<uint16_t>(((local.tm_year - 80) << 9) | ((local.tm_mon + 1) << 5) | local.tm_mday);
+    const auto time = static_cast<uint16_t>((local.tm_hour << 11) | (local.tm_min << 5) | (local.tm_sec / 2));
+    if (pdate) *pdate = date;
+    if (ptime) *ptime = time;
+    return true;
+  }
   bool isDirectory() const { return dir_ != nullptr; }
   void rewindDirectory() {
     if (dir_) rewinddir(dir_);
@@ -185,8 +199,58 @@ class HalStorage {
   bool openFileForRead(const char*, const char* path, HalFile& f) { return f.openForRead(path); }
   bool openFileForWrite(const char*, const std::string& path, HalFile& f) { return f.openForWrite(path); }
   bool exists(const char* path) { return std::filesystem::exists(path); }
+  String readFile(const char* path) {
+    std::string payload;
+    HalFile file;
+    if (!file.openForRead(path)) return String();
+    char buf[512];
+    int read = 0;
+    while ((read = file.read(buf, sizeof(buf))) > 0) payload.append(buf, static_cast<size_t>(read));
+    return String(payload.c_str());
+  }
+  bool readFileToStream(const char* path, Print& out, size_t chunkSize = 256) {
+    HalFile file;
+    if (!file.openForRead(path)) return false;
+    std::vector<char> buf(chunkSize == 0 ? 256 : chunkSize);
+    int read = 0;
+    while ((read = file.read(buf.data(), buf.size())) > 0) {
+      out.write(reinterpret_cast<const uint8_t*>(buf.data()), static_cast<size_t>(read));
+    }
+    return true;
+  }
+  size_t readFileToBuffer(const char* path, char* buffer, size_t bufferSize, size_t maxBytes = 0) {
+    if (bufferSize == 0) return 0;
+    HalFile file;
+    if (!file.openForRead(path)) return 0;
+    size_t limit = bufferSize - 1;
+    if (maxBytes != 0 && maxBytes < limit) limit = maxBytes;
+    const int read = file.read(buffer, limit);
+    if (read <= 0) {
+      buffer[0] = 0;
+      return 0;
+    }
+    buffer[read] = 0;
+    return static_cast<size_t>(read);
+  }
+  bool writeFile(const char* path, const String& content) {
+    HalFile file;
+    if (!file.openForWrite(path)) return false;
+    const size_t len = content.length();
+    const bool ok = file.write(reinterpret_cast<const uint8_t*>(content.c_str()), len) == len;
+    file.flush();
+    return ok;
+  }
+  bool ensureDirectoryExists(const char* path) { return mkdir(path); }
+  bool rename(const char* from, const char* to) {
+    std::error_code ec;
+    std::filesystem::rename(from, to, ec);
+    return !ec;
+  }
   bool mkdir(const char* path, bool recursive = true) {
     std::error_code ec;
+    // Device-side ensureDirectoryExists() succeeds for an existing directory;
+    // mirror that so callers can treat mkdir as idempotent.
+    if (std::filesystem::exists(path)) return true;
     return recursive ? std::filesystem::create_directories(path, ec) : std::filesystem::create_directory(path, ec);
   }
   bool remove(const char* path) { return std::filesystem::remove(path); }
