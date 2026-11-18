@@ -12,6 +12,7 @@
 
 #include "../ActivityManager.h"
 #include "../home/BookInfoActivity.h"
+#include "CrossPointSettings.h"
 #include "KOReaderDocumentId.h"
 #include "ReadingStats.h"
 #include "components/UITheme.h"
@@ -87,6 +88,10 @@ void ShelfActivity::onEnter() {
     }
     mode_ = Mode::Grid;
     refreshPage();
+    // The saved index is shown immediately; a fresh incremental scan follows on
+    // the next loop tick so books downloaded since the last visit (OPDS writes
+    // straight to the card) appear without a reboot.
+    rescanPending_ = true;
   } else {
     mode_ = Mode::Scanning;
   }
@@ -98,6 +103,12 @@ void ShelfActivity::loop() {
     return;
   }
   if (mode_ != Mode::Grid) return;
+
+  if (rescanPending_) {
+    rescanPending_ = false;
+    rescanLibrary();
+    return;
+  }
 
   ButtonEventManager::ButtonEvent ev;
   while (buttonEvents.consumeEvent(ev)) {
@@ -234,14 +245,40 @@ void ShelfActivity::updateLayout() {
 void ShelfActivity::rebuildIndex() {
   LOG_DBG("Shelf", "rebuilding library index");
   index_ = {};
-  shelf::ShelfScanOptions options;
   shelf::ShelfIndexer indexer(&shelf::readBookMetadataThunk, nullptr, &ShelfCoverService::forgetBookThunk, nullptr);
-  const shelf::ShelfScanStats stats = indexer.scan(index_, options);
+  const shelf::ShelfScanStats stats = indexer.scan(index_, scanOptions());
   LOG_DBG("Shelf", "scan done: files=%zu kept=%zu refreshed=%zu removed=%zu truncated=%d", stats.filesSeen, stats.kept,
           stats.refreshed, stats.removed, stats.truncated ? 1 : 0);
   if (!store_.save(index_)) LOG_ERR("Shelf", "index save failed, shelf keeps the previous copy");
   selected_ = 0;
   mode_ = Mode::Grid;
+  applyQuery();
+  refreshPage();
+  requestUpdate();
+}
+
+shelf::ShelfScanOptions ShelfActivity::scanOptions() const {
+  shelf::ShelfScanOptions options;
+  // OPDS drops downloads into its configured folder, which is usually outside
+  // /books — the shelf has to follow that setting or those books stay invisible.
+  std::string folder = SETTINGS.opdsDownloadFolder;
+  if (!folder.empty()) {
+    if (folder.front() != '/') folder.insert(folder.begin(), '/');
+    while (folder.size() > 1 && folder.back() == '/') folder.pop_back();
+    if (folder != "/") options.downloadsRoot = std::move(folder);
+  }
+  return options;
+}
+
+void ShelfActivity::rescanLibrary() {
+  const size_t before = index_.books.size();
+  shelf::ShelfIndexer indexer(&shelf::readBookMetadataThunk, nullptr, &ShelfCoverService::forgetBookThunk, nullptr);
+  const shelf::ShelfScanStats stats = indexer.scan(index_, scanOptions());
+  const bool changed = stats.refreshed > 0 || stats.removed > 0 || index_.books.size() != before;
+  if (!changed) return;
+  LOG_DBG("Shelf", "rescan changed the library: refreshed=%zu removed=%zu size=%zu", stats.refreshed, stats.removed,
+          index_.books.size());
+  if (!store_.save(index_)) LOG_ERR("Shelf", "index save failed after rescan");
   applyQuery();
   refreshPage();
   requestUpdate();

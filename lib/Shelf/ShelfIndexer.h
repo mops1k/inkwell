@@ -25,6 +25,11 @@ struct ShelfScanOptions {
   // without walking every folder of a 16 GB card.
   std::string booksRoot = "/books";
   std::string root = "/";
+  // OPDS downloads go to a configurable folder (SETTINGS.opdsDownloadFolder),
+  // not necessarily under /books: without walking it those books never reach
+  // the shelf. Empty means "no extra folder" (downloads land in the SD root,
+  // which the shallow root walk already covers).
+  std::string downloadsRoot;
   uint16_t maxDepth = kMaxLibraryDepth;
   size_t maxBooks = kMaxIndexBooks;
 };

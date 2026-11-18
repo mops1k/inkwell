@@ -2,6 +2,7 @@
 
 #include <ShelfIndex.h>
 #include <ShelfIndexStore.h>
+#include <ShelfIndexer.h>
 #include <ShelfStateStore.h>
 
 #include <string>
@@ -38,9 +39,11 @@ class ShelfActivity final : public Activity {
   enum class Overlay : uint8_t { None, BookMenu, FilterCategories, FilterValues };
 
   void rebuildIndex();
-  void updateLayout();  // content rect + grid metrics for the current theme chrome
-  void refreshPage();   // rebuilds cells_ for the current page, resolves covers
-  void applyQuery();    // re-filters/sorts the index into view_ and clamps the focus
+  shelf::ShelfScanOptions scanOptions() const;  // /books + SD root + OPDS downloads folder
+  void rescanLibrary();                         // incremental, on every entry to the shelf
+  void updateLayout();                          // content rect + grid metrics for the current theme chrome
+  void refreshPage();                           // rebuilds cells_ for the current page, resolves covers
+  void applyQuery();                            // re-filters/sorts the index into view_ and clamps the focus
   void moveSelection(int delta);
   void openSelected();
   void runBookAction(BookAction action);
@@ -72,4 +75,5 @@ class ShelfActivity final : public Activity {
   Overlay overlay_ = Overlay::None;
   int menuIndex_ = 0;
   int selected_ = 0;  // index into view_
+  bool rescanPending_ = false;
 };

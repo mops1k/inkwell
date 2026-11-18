@@ -87,6 +87,12 @@ void ShelfIndexer::walkDirectory(WalkState& state, const std::string& dir, uint1
 
 void ShelfIndexer::considerFile(WalkState& state, const std::string& path, uint32_t size, uint32_t fatDateTime,
                                 BookFormat format) {
+  // Roots can nest (a downloads folder inside /books, or /books itself), and a
+  // book must appear exactly once: the first walk that reaches the file wins.
+  for (const auto& listed : state.fresh) {
+    if (listed.path == path) return;
+  }
+
   if (state.fresh.size() >= state.options.maxBooks) {
     state.truncated = true;
     return;
@@ -132,6 +138,13 @@ ShelfScanStats ShelfIndexer::scan(ShelfIndex& index, const ShelfScanOptions& opt
   // Same directory twice (root == booksRoot) would double-list every book.
   if (!options.booksRoot.empty() && options.booksRoot != options.root) {
     walkDirectory(state, options.booksRoot, 0, true);
+  }
+  // Books downloaded through OPDS land in the configured download folder; it is
+  // walked recursively so periodicals/subfolders added by OPDS clients still
+  // show up. Skipped when it coincides with a root already walked.
+  if (!options.downloadsRoot.empty() && options.downloadsRoot != options.root &&
+      options.downloadsRoot != options.booksRoot) {
+    walkDirectory(state, options.downloadsRoot, 0, true);
   }
 
   if (state.openedDirs == 0) {

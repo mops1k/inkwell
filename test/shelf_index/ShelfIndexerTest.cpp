@@ -123,6 +123,55 @@ TEST(ShelfIndexer, DeletedBooksAreDropped) {
   EXPECT_EQ(1u, countPaths(index, "a.md"));
 }
 
+TEST(ShelfIndexer, IndexesConfiguredDownloadsFolderRecursively) {
+  shelftest::TempDir dir("indexer_downloads");
+  writeFile(dir.join("books/classic.txt"), "books");
+  writeFile(dir.join("My Downloads/fresh.epub"), "downloaded");
+  writeFile(dir.join("My Downloads/series/deep.fb2"), "nested download");
+
+  FakeMeta ctx;
+  shelf::ShelfIndexer indexer(fakeMetadata, &ctx);
+  shelf::ShelfIndex index;
+  shelf::ShelfScanOptions options = optionsFor(dir);
+  options.downloadsRoot = dir.join("My Downloads");
+  indexer.scan(index, options);
+
+  EXPECT_EQ(3u, index.books.size());
+  EXPECT_EQ(1u, countPaths(index, "fresh.epub"));
+  // Subfolders inside the download folder are walked, not just its top level.
+  EXPECT_EQ(1u, countPaths(index, "My Downloads/series/deep.fb2"));
+}
+
+TEST(ShelfIndexer, DownloadsFolderInsideBooksIsNotDuplicated) {
+  shelftest::TempDir dir("indexer_downloads_overlap");
+  writeFile(dir.join("books/downloads/a.epub"), "one file, two roots");
+
+  FakeMeta ctx;
+  shelf::ShelfIndexer indexer(fakeMetadata, &ctx);
+  shelf::ShelfIndex index;
+  shelf::ShelfScanOptions options = optionsFor(dir);
+  options.downloadsRoot = dir.join("books/downloads");
+  indexer.scan(index, options);
+
+  EXPECT_EQ(1u, index.books.size());
+  EXPECT_EQ(1u, countPaths(index, "a.epub"));
+}
+
+TEST(ShelfIndexer, MissingDownloadsFolderIsHarmless) {
+  shelftest::TempDir dir("indexer_downloads_missing");
+  writeFile(dir.join("books/a.md"), "one");
+
+  FakeMeta ctx;
+  shelf::ShelfIndexer indexer(fakeMetadata, &ctx);
+  shelf::ShelfIndex index;
+  shelf::ShelfScanOptions options = optionsFor(dir);
+  options.downloadsRoot = dir.join("not-created-yet");
+  const shelf::ShelfScanStats stats = indexer.scan(index, options);
+
+  EXPECT_EQ(1u, index.books.size());
+  EXPECT_EQ(0u, stats.removed);
+}
+
 TEST(ShelfIndexer, MaxBooksLimitTruncatesTheScan) {
   shelftest::TempDir dir("indexer_limit");
   writeFile(dir.join("a.txt"), "a");
