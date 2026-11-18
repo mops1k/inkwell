@@ -33,7 +33,8 @@ class ShelfActivity final : public Activity {
   enum class Mode : uint8_t { Loading, Scanning, Grid };
 
   void rebuildIndex();
-  void refreshPage();  // rebuilds cells_ for the current page, resolves covers
+  void updateLayout();  // content rect + grid metrics for the current theme chrome
+  void refreshPage();   // rebuilds cells_ for the current page, resolves covers
   void moveSelection(int delta);
   void openSelected();
   void runBookAction(BookAction action);

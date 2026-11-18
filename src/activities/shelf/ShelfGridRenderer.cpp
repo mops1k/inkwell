@@ -96,72 +96,66 @@ void drawProgress(GfxRenderer& renderer, int x, int y, int width, int progressPe
 
 }  // namespace
 
-GridMetrics gridMetrics(int screenWidth, int screenHeight) {
+GridMetrics gridMetrics(const GridArea& area) {
   GridMetrics metrics;
+  metrics.area = area;
   const shelf::CoverBox cell = shelf::coverBox(shelf::ShelfCoverSize::Cell);
   metrics.cellW = cell.width;
   metrics.cellH = cell.height;
 
-  // Two cells and one gap must fit between the margins; on a narrower screen the
-  // gap shrinks before anything overflows.
+  // Two cells and one gap must fit inside the reserved area; on a narrower area
+  // the gap shrinks before anything overflows.
   constexpr int kMinGapX = 8;
-  const int usable = screenWidth - metrics.marginX * 2;
+  const int usable = area.width;
   metrics.gapX = std::max(kMinGapX, (usable - metrics.columns * metrics.cellW) / (metrics.columns - 1));
 
   const int rowHeight = metrics.cellH + metrics.captionH + metrics.gapY;
-  const int available = screenHeight - metrics.gridTop - 44;  // footer band
-  metrics.rows = std::max(1, (available + metrics.gapY) / rowHeight);
+  metrics.rows = std::max(1, (area.height + metrics.gapY) / rowHeight);
   return metrics;
 }
 
 int pageCapacity(const GridMetrics& metrics) { return std::max(1, metrics.columns * metrics.rows); }
 
 void drawShelfPage(GfxRenderer& renderer, const GridMetrics& metrics, const PageView& page) {
-  const int screenWidth = renderer.getScreenWidth();
-  const int screenHeight = renderer.getScreenHeight();
+  const GridArea& area = metrics.area;
 
-  renderer.drawText(kHeaderFont, metrics.marginX, metrics.headerTop, page.title);
-
+  // Page counter only: the header above it belongs to the theme.
   char counter[24];
   std::snprintf(counter, sizeof(counter), "%d/%d", page.page + 1, std::max(1, page.pageCount));
   const int counterWidth = renderer.getTextWidth(kCaptionFont, counter);
-  renderer.drawText(kCaptionFont, screenWidth - metrics.marginX - counterWidth, metrics.headerTop + 4, counter);
+  renderer.drawText(kCaptionFont, area.x + area.width - counterWidth, area.y, counter);
 
   if (page.count == 0 || page.cells == nullptr) {
     const int textWidth = renderer.getTextWidth(kCaptionFont, page.emptyText);
-    renderer.drawText(kCaptionFont, (screenWidth - textWidth) / 2, screenHeight / 2, page.emptyText);
-  } else {
-    for (size_t index = 0; index < page.count; ++index) {
-      const int column = static_cast<int>(index) % metrics.columns;
-      const int row = static_cast<int>(index) / metrics.columns;
-      const int x = metrics.marginX + column * (metrics.cellW + metrics.gapX);
-      const int y = metrics.gridTop + row * (metrics.cellH + metrics.captionH + metrics.gapY);
-      const CellView& cell = page.cells[index];
+    renderer.drawText(kCaptionFont, area.x + (area.width - textWidth) / 2, area.y + area.height / 2, page.emptyText);
+    return;
+  }
+  for (size_t index = 0; index < page.count; ++index) {
+    const int column = static_cast<int>(index) % metrics.columns;
+    const int row = static_cast<int>(index) / metrics.columns;
+    const int x = area.x + column * (metrics.cellW + metrics.gapX);
+    const int y = area.y + row * (metrics.cellH + metrics.captionH + metrics.gapY);
+    const CellView& cell = page.cells[index];
 
-      if (static_cast<int>(index) == page.selected) {
-        renderer.drawRect(x - kSelectionInset, y - kSelectionInset, metrics.cellW + kSelectionInset * 2,
-                          metrics.cellH + metrics.captionH + kSelectionInset * 2, 2, true);
-      }
+    if (static_cast<int>(index) == page.selected) {
+      renderer.drawRect(x - kSelectionInset, y - kSelectionInset, metrics.cellW + kSelectionInset * 2,
+                        metrics.cellH + metrics.captionH + kSelectionInset * 2, 2, true);
+    }
 
-      drawCover(renderer, cell, x, y, metrics.cellW, metrics.cellH);
-      // Progress sits on the artwork's bottom edge: a caption-row bar read as a
-      // stray line between grid rows.
-      drawProgress(renderer, x, y + metrics.cellH - 2, metrics.cellW, cell.progressPercent);
+    drawCover(renderer, cell, x, y, metrics.cellW, metrics.cellH);
+    // Progress sits on the artwork's bottom edge: a caption-row bar read as a
+    // stray line between grid rows.
+    drawProgress(renderer, x, y + metrics.cellH - 2, metrics.cellW, cell.progressPercent);
 
-      const int captionY = y + metrics.cellH + 4;
-      const int lineHeight = renderer.getLineHeight(kCaptionFont);
-      const std::string title = fitText(renderer, kCaptionFont, cell.title, metrics.cellW);
-      renderer.drawText(kCaptionFont, x, captionY, title.c_str());
-      if (!cell.author.empty()) {
-        const std::string author = fitText(renderer, kCaptionFont, cell.author, metrics.cellW);
-        renderer.drawText(kCaptionFont, x, captionY + lineHeight, author.c_str());
-      }
+    const int captionY = y + metrics.cellH + 4;
+    const int lineHeight = renderer.getLineHeight(kCaptionFont);
+    const std::string title = fitText(renderer, kCaptionFont, cell.title, metrics.cellW);
+    renderer.drawText(kCaptionFont, x, captionY, title.c_str());
+    if (!cell.author.empty()) {
+      const std::string author = fitText(renderer, kCaptionFont, cell.author, metrics.cellW);
+      renderer.drawText(kCaptionFont, x, captionY + lineHeight, author.c_str());
     }
   }
-
-  const int footerY = screenHeight - 26;
-  renderer.drawLine(metrics.marginX, footerY - 8, screenWidth - metrics.marginX, footerY - 8, true);
-  renderer.drawText(kCaptionFont, metrics.marginX, footerY, page.hint);
 }
 
 }  // namespace shelfui

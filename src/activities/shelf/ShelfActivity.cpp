@@ -14,6 +14,7 @@
 #include "../home/BookInfoActivity.h"
 #include "KOReaderDocumentId.h"
 #include "ReadingStats.h"
+#include "components/UITheme.h"
 
 namespace {
 
@@ -46,7 +47,7 @@ const char* actionLabel(ShelfActivity::BookAction action) {
 
 void ShelfActivity::onEnter() {
   Activity::onEnter();
-  metrics_ = shelfui::gridMetrics(renderer.getScreenWidth(), renderer.getScreenHeight());
+  updateLayout();
   index_ = {};
   selected_ = 0;
 
@@ -132,18 +133,29 @@ void ShelfActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
   if (mode_ == Mode::Grid) {
+    updateLayout();
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const Rect contentRect = UITheme::getContentRect(renderer, true, true);
+    GUI.drawHeader(renderer,
+                   Rect{contentRect.x, contentRect.y + metrics.topPadding, contentRect.width, metrics.headerHeight},
+                   tr(STR_SHELF));
+
     shelfui::PageView page;
+    const int capacity = shelfui::pageCapacity(metrics_);
     page.cells = cells_.data();
     page.count = cells_.size();
-    page.selected = selected_ - (selected_ / shelfui::pageCapacity(metrics_)) * shelfui::pageCapacity(metrics_);
-    page.page = selected_ / shelfui::pageCapacity(metrics_);
-    page.pageCount = std::max(1, (static_cast<int>(index_.books.size()) + shelfui::pageCapacity(metrics_) - 1) /
-                                     shelfui::pageCapacity(metrics_));
-    page.title = tr(STR_SHELF);
-    page.hint = tr(STR_SHELF_HINT);
+    page.selected = selected_ > 0 ? selected_ % capacity : 0;
+    page.page = selected_ / capacity;
+    page.pageCount = std::max(1, (static_cast<int>(index_.books.size()) + capacity - 1) / capacity);
     page.emptyText = tr(STR_SHELF_EMPTY);
     shelfui::drawShelfPage(renderer, metrics_, page);
     if (menuOpen_) drawMenu();
+
+    // Same button-hint chrome as the main screen. Only three captions are used,
+    // exactly like Home on Lyra: four long labels overflow the 528px row.
+    const auto labels = mappedInput.mapLabels("", tr(STR_OPEN), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    GUI.drawSideButtonHints(renderer, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   } else {
     const char* text = mode_ == Mode::Scanning ? tr(STR_SHELF_SCANNING) : tr(STR_LOADING);
     const int width = renderer.getTextWidth(UI_12_FONT_ID, text);
@@ -151,6 +163,17 @@ void ShelfActivity::render(RenderLock&&) {
   }
 
   renderer.displayBuffer();
+}
+
+void ShelfActivity::updateLayout() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect contentRect = UITheme::getContentRect(renderer, true, true);
+  shelfui::GridArea area;
+  area.x = contentRect.x;
+  area.y = contentRect.y + metrics.topPadding + metrics.headerHeight + 4;
+  area.width = contentRect.width;
+  area.height = contentRect.height - metrics.topPadding - metrics.headerHeight - 4;
+  metrics_ = shelfui::gridMetrics(area);
 }
 
 void ShelfActivity::rebuildIndex() {
@@ -170,6 +193,7 @@ void ShelfActivity::rebuildIndex() {
 
 void ShelfActivity::refreshPage() {
   cells_.clear();
+  updateLayout();
   const int capacity = shelfui::pageCapacity(metrics_);
   const int pageIndex = capacity > 0 ? selected_ / capacity : 0;
   const int start = pageIndex * capacity;

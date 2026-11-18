@@ -19,10 +19,28 @@ set(UISIM_SOURCES
   main.cpp
   Png.cpp
   Scenario.cpp
+  CoverFixtures.cpp
   ShelfScene.cpp
+  MenuScene.cpp
   host/HostEsp.cpp
   host/Stubs.cpp
+  host/UIThemeHost.cpp
   ${REPO_ROOT}/src/activities/shelf/ShelfGridRenderer.cpp
+  # The REAL theme chrome. UITheme.cpp itself is replaced by
+  # host/UIThemeHost.cpp (it pulls the NVS/JSON settings store, book progress
+  # caches and the three extra theme variants); the themes below are compiled
+  # verbatim, so header/list/hint drawing cannot drift from the device.
+  ${REPO_ROOT}/src/components/themes/BaseTheme.cpp
+  ${REPO_ROOT}/src/components/themes/lyra/LyraTheme.cpp
+  ${REPO_ROOT}/lib/I18n/I18n.cpp
+  ${REPO_ROOT}/lib/I18n/I18nStrings.cpp
+  ${REPO_ROOT}/src/util/BookArchiveUtils.cpp
+  # BookArchiveUtils sniffs archives through lib/Shelf's single implementation.
+  ${REPO_ROOT}/lib/Shelf/BookFormat.cpp
+  ${REPO_ROOT}/lib/ZipFile/ZipFile.cpp
+  # ZipFile's inflate path (used only by the archive sniffing above).
+  ${REPO_ROOT}/lib/InflateReader/InflateReader.cpp
+  ${REPO_ROOT}/lib/uzlib/src/tinflate.c
   ${REPO_ROOT}/lib/GfxRenderer/GfxRenderer.cpp
   ${REPO_ROOT}/lib/GfxRenderer/Bitmap.cpp
   ${REPO_ROOT}/lib/GfxRenderer/BitmapHelpers.cpp
@@ -38,13 +56,19 @@ set(UISIM_SOURCES
 add_executable(ui_sim ${UISIM_SOURCES})
 
 # Include order matters:
-#  - host/ first: our HalDisplay/HalGPIO shadow the device headers;
+#  - host/ first: our HalDisplay/HalGPIO/HalClock/HalPowerManager shadow the
+#    device headers (lib/hal is deliberately NOT on the path: the real
+#    HalStorage.h pulls SdFat and HalPowerManager.h pulls BatteryMonitor from
+#    freeink-sdk);
+#  - lib/I18n before test/epub_pipeline so the REAL I18n.h/StrId wins over the
+#    pipeline's tr() stub — the themes call tr() and UIIcon rows need StrId;
 #  - lib/GfxRenderer before test/epub_pipeline so the REAL GfxRenderer.h wins
-#    (the pipeline's stub stays available for its esp_*/I18n headers);
+#    (the pipeline's stub stays available for its esp_* headers);
 #  - test/zip_entry_reader + test/shims last provide the real-FS and Arduino shims.
 target_include_directories(ui_sim PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/host
   ${REPO_ROOT}/src
+  ${REPO_ROOT}/lib/I18n
   ${REPO_ROOT}/lib/GfxRenderer
   ${REPO_ROOT}/lib/EpdFont
   ${REPO_ROOT}/lib/Utf8
@@ -57,6 +81,7 @@ target_include_directories(ui_sim PRIVATE
   ${REPO_ROOT}/lib/ZipFile
   ${REPO_ROOT}/lib/CooperativeAbort
   ${REPO_ROOT}/lib/Shelf
+  ${REPO_ROOT}/lib/Epub
   ${REPO_ROOT}/lib/Epub
   ${REPO_ROOT}/lib/JsonParser
   ${REPO_ROOT}/test/epub_pipeline
@@ -72,9 +97,9 @@ target_compile_options(ui_sim PRIVATE
   -Wextra
   # The device toolchain's Arduino.h pulls in <cmath>/ESP heap symbols that the
   # host shims do not; the prelude injects both (a single -include, because
-  # CMake de-duplicates repeated flag/value pairs).
-  -include
-  ${CMAKE_CURRENT_SOURCE_DIR}/host/host_prelude.h
+  # CMake de-duplicates repeated flag/value pairs). C++ only: the harness also
+  # compiles uzlib's tinflate.c, which must not see a C++ prelude.
+  "$<$<COMPILE_LANGUAGE:CXX>:-include;${CMAKE_CURRENT_SOURCE_DIR}/host/host_prelude.h>"
 )
 
 # Visual smoke test: render the demo scene with a key scenario and fail on a
