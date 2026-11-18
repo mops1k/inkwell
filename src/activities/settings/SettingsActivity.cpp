@@ -28,12 +28,10 @@ std::string activeDictionaryName(void*) {
 bool isUnifiedTextSetting(const SettingInfo& setting) {
   if (!setting.key) return false;
   static constexpr const char* keys[] = {
-      "fontFamily",         "fontSize",           "textAntiAliasing",
-      "fastAntiAliasingV2", "textDarkness",       "paragraphAlignment",
-      "embeddedStyle",      "hyphenationEnabled", "fontSizeNormalization",
-      "screenMargin",       "screenMarginTop",    "screenMarginBottom",
-      "lineHeightPercent",  "extraParagraphSpacing",
-      "bionicReading",      "guideDots",
+      "fontFamily",         "fontSize",           "textAntiAliasing",   "fastAntiAliasingV2",    "textDarkness",
+      "paragraphAlignment", "embeddedStyle",      "hyphenationEnabled", "fontSizeNormalization", "screenMargin",
+      "screenMarginTop",    "screenMarginBottom", "lineHeightPercent",  "extraParagraphSpacing", "bionicReading",
+      "guideDots",
   };
   for (const char* key : keys) {
     if (std::strcmp(setting.key, key) == 0) return true;
@@ -182,13 +180,7 @@ void SettingsActivity::onEnter() {
              std::move(SettingInfo::Action(StrId::STR_OPDS_BROWSER, SettingAction::OPDSBrowser)
                            .withSubcategory(StrId::STR_MENU_SYS_NETWORK)));
   addToMoved(systemSettings, lastSystemSub,
-             std::move(SettingInfo::Action(StrId::STR_DROPBOX, SettingAction::DropboxBrowser)
-                           .withSubcategory(StrId::STR_MENU_SYS_NETWORK)));
-  addToMoved(systemSettings, lastSystemSub,
              std::move(SettingInfo::Action(StrId::STR_CLOCK_SETTINGS, SettingAction::ClockSettings)
-                           .withSubcategory(StrId::STR_MENU_SYS_TOOLS)));
-  addToMoved(systemSettings, lastSystemSub,
-             std::move(SettingInfo::Action(StrId::STR_WEATHER_SETTINGS, SettingAction::Weather)
                            .withSubcategory(StrId::STR_MENU_SYS_TOOLS)));
   addToMoved(systemSettings, lastSystemSub,
              std::move(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache)

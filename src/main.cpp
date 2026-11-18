@@ -42,7 +42,6 @@
 #include "SdCardFontSystem.h"
 #include "SilentRestart.h"
 #include "UiFonts.h"
-#include "WeatherClient.h"
 #include "WifiCredentialStore.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
@@ -369,7 +368,7 @@ enum class BootPhase : uint8_t {
   SerialUp,        // USB-CDC opened (only when USB is connected; earlier phases log nothing)
   RecoverySettle,  // 500 ms UP+POWER recovery-combo sample window
   SdMount,         // Storage.begin()
-  ConfigLoad,      // settings, app state, i18n, KOReader, OPDS, weather, theme
+  ConfigLoad,      // settings, app state, i18n, KOReader, OPDS, theme
   DisplayFonts,    // panel init + framebuffer alloc + font registration + SD font scan
   FirstPaint,      // splash / quick-resume frame handed to the panel (logo now visible)
   StoreLoad,       // clock, recent books, bookmarks, reading stats
@@ -453,23 +452,10 @@ static void serviceBootPowerRelease() {
 }
 
 static void refreshSleepCalendar() {
-  const bool withWeather = SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CALENDAR_WEATHER &&
-                           WEATHER_SETTINGS.hasLocation();
   if (gpio.deviceIsX3() && !HalClock::hasCurrentDate()) {
     HalClock::restoreExternalDate();
   }
-  const bool needsDate = !HalClock::hasCurrentDate();
-
-  time_t weatherFetchedAt = 0;
-  if (withWeather) {
-    const auto cached = WeatherClient::getWeather(WEATHER_SETTINGS);
-    if (cached.valid) weatherFetchedAt = cached.fetchedAt;
-  }
-  const auto needsWeather = [withWeather, weatherFetchedAt]() {
-    const time_t now = HalClock::now();
-    return withWeather && (weatherFetchedAt <= 0 || now < weatherFetchedAt || now - weatherFetchedAt >= 30 * 60);
-  };
-  if (!needsDate && !needsWeather()) {
+  if (HalClock::hasCurrentDate()) {
     return;
   }
 
@@ -489,8 +475,8 @@ static void refreshSleepCalendar() {
     }
   }
 
-  // Like the Weather screen, release the secondary buffer before starting Wi-Fi
-  // or TLS. X4 can still draw the final sleep frame in single-buffer mode.
+  // The clock sync releases the secondary buffer before starting Wi-Fi or TLS.
+  // X4 can still draw the final sleep frame in single-buffer mode.
   {
     RenderLock lock;
     trimMemoryForNetworkSession(renderer, "SLP");
@@ -505,7 +491,7 @@ static void refreshSleepCalendar() {
     WiFi.config(IPAddress(), IPAddress(), IPAddress(), IPAddress());
     WiFi.begin(credential->ssid.c_str(), credential->password.empty() ? nullptr : credential->password.c_str());
     const auto started = millis();
-    const unsigned long connectTimeout = needsDate ? 5000 : 2500;
+    const unsigned long connectTimeout = 5000;
     while (WiFi.status() != WL_CONNECTED && millis() - started < connectTimeout) {
       delay(50);
     }
@@ -514,12 +500,7 @@ static void refreshSleepCalendar() {
     }
   }
 
-  if (needsDate && !HalClock::syncNtp(SETTINGS.ntpServer)) {
-    return;
-  }
-  if (needsWeather()) {
-    WeatherClient::refreshBeforeSleep(WEATHER_SETTINGS);
-  }
+  HalClock::syncNtp(SETTINGS.ntpServer);
 }
 
 // Enter deep sleep mode. fromTimeout=true marks an auto-sleep (gates "Quick Resume on Timeout").
@@ -571,9 +552,7 @@ void enterDeepSleep(bool fromTimeout = false) {
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME, fromTimeout,
       SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT);
   APP_STATE.quickSleepHome = isQuickResumeSleep ? activityManager.captureHomeForQuickSleep() : HomeSleepState{};
-  const bool calendarSleep = !isQuickResumeSleep &&
-                             (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CALENDAR ||
-                              SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CALENDAR_WEATHER);
+  const bool calendarSleep = !isQuickResumeSleep && SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CALENDAR;
   if (calendarSleep) {
     if (!skipSleepCalendarSync) {
       sleepCalendarSyncMarker = SLEEP_CALENDAR_SYNC_MAGIC;
@@ -984,7 +963,6 @@ void setup() {
   I18N.loadSettings();
   KOREADER_STORE.loadFromFile();
   OPDS_STORE.loadFromFile();
-  WEATHER_SETTINGS.loadFromFile();
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
   // In LandscapeCounterClockwise the front-button strip runs bottom-to-top on screen, so the

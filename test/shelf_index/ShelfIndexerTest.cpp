@@ -45,28 +45,30 @@ void recordRemoved(void* ctx, const std::string& path) { static_cast<std::vector
 
 }  // namespace
 
-TEST(ShelfIndexer, WalksRootShallowlyAndBooksRecursively) {
+TEST(ShelfIndexer, WalksRootTwoLevelsAndBooksRecursively) {
   shelftest::TempDir dir("indexer_walk");
   writeFile(dir.join("top.txt"), "root book");
-  writeFile(dir.join("sub/deep.epub"), "root subfolder must not be walked");
+  writeFile(dir.join("My Downloads/inbox.epub"), "download folder on the card root");
   writeFile(dir.join("books/nested/novel.md"), "nested markdown");
   writeFile(dir.join("books/note.pdf"), "not a book");
   writeFile(dir.join(".hidden-book.txt"), "hidden");
   writeFile(dir.join(".crosspoint/cache/skip.epub"), "cache dir");
+  writeFile(dir.join("deep/a/b/too-far.epub"), "third level below root is not walked");
 
   FakeMeta ctx;
   shelf::ShelfIndexer indexer(fakeMetadata, &ctx);
   shelf::ShelfIndex index;
   const shelf::ShelfScanStats stats = indexer.scan(index, optionsFor(dir));
 
-  EXPECT_EQ(2u, index.books.size());
+  EXPECT_EQ(3u, index.books.size());
   EXPECT_EQ(1u, countPaths(index, "top.txt"));
+  EXPECT_EQ(1u, countPaths(index, "inbox.epub"));
   EXPECT_EQ(1u, countPaths(index, "novel.md"));
-  EXPECT_EQ(0u, countPaths(index, "sub/deep.epub"));
+  EXPECT_EQ(0u, countPaths(index, "too-far.epub"));
   EXPECT_EQ(0u, countPaths(index, "hidden"));
   EXPECT_EQ(0u, countPaths(index, ".crosspoint"));
-  EXPECT_EQ(2u, stats.refreshed);
-  EXPECT_EQ(2, ctx.calls);
+  EXPECT_EQ(3u, stats.refreshed);
+  EXPECT_EQ(3, ctx.calls);
 }
 
 TEST(ShelfIndexer, UnchangedFilesAreNotReopened) {

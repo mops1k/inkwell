@@ -31,7 +31,6 @@ enum class SettingAction {
   SystemInfo,
   DetectTimezone,
   SyncTime,
-  Weather,
   ReadingStats,
   SleepTimeoutPicker,
   RefreshFrequencyPicker,
@@ -40,7 +39,6 @@ enum class SettingAction {
   SwitchFirmware,
   TextSettings,
   Submenu,
-  DropboxBrowser,
 };
 
 struct SettingInfo {

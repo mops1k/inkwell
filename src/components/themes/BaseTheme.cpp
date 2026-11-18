@@ -14,7 +14,6 @@
 #include "I18n.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
-#include "components/icons/dropbox24.h"
 #include "fontIds.h"
 #include "util/ButtonHintLayout.h"
 #include "util/TabBarLayout.h"
@@ -208,7 +207,8 @@ void BaseTheme::drawCapsuleButtonHints(GfxRenderer& renderer, const char* btn1, 
 
 void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                                 const char* btn4, bool equalWidths) const {
-  drawCapsuleButtonHints(renderer, btn1, btn2, btn3, btn4, UI_10_FONT_ID, BaseMetrics::values.buttonHintsHeight, equalWidths);
+  drawCapsuleButtonHints(renderer, btn1, btn2, btn3, btn4, UI_10_FONT_ID, BaseMetrics::values.buttonHintsHeight,
+                         equalWidths);
 }
 
 void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const {
@@ -838,19 +838,10 @@ void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
     std::string labelStr = buttonLabel(i);
     const char* label = labelStr.c_str();
     const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, label);
-    const bool drawDropboxIcon = rowIcon && rowIcon(i) == UIIcon::Dropbox;
-    constexpr int iconSize = 24;
-    constexpr int iconGap = 8;
-    const int groupWidth = textWidth + (drawDropboxIcon ? iconSize + iconGap : 0);
-    const int groupX = rect.x + (rect.width - groupWidth) / 2;
-    const int textX = groupX + (drawDropboxIcon ? iconSize + iconGap : 0);
-    if (drawDropboxIcon) {
-      const int iconY = tileY + (rowHeight - iconSize) / 2;
-      if (selected)
-        renderer.drawIconInverted(Dropbox24Icon, groupX, iconY, iconSize, iconSize);
-      else
-        renderer.drawIcon(Dropbox24Icon, groupX, iconY, iconSize, iconSize);
-    }
+    // Icons in this list layout are a derived-theme capability (MinimalTheme and the
+    // carousel draw them); the base row is text-only.
+    (void)rowIcon;
+    const int textX = rect.x + (rect.width - textWidth) / 2;
     const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
     const int textY = tileY + (rowHeight - lineHeight) / 2;  // vertically centered assuming y is top of text
     // Invert text when the tile is selected, to contrast with the filled background

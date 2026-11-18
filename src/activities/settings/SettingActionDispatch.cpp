@@ -22,10 +22,8 @@
 #include "SyncTimeActivity.h"
 #include "SystemInformationActivity.h"
 #include "TextSettingsActivity.h"
-#include "activities/browser/DropboxBrowserActivity.h"
 #include "activities/network/SerialTransferActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
-#include "activities/weather/WeatherSettingsActivity.h"
 
 std::unique_ptr<Activity> createActivityForAction(SettingAction action, GfxRenderer& renderer,
                                                   MappedInputManager& mappedInput) {
@@ -46,8 +44,6 @@ std::unique_ptr<Activity> createActivityForAction(SettingAction action, GfxRende
       return std::make_unique<KOReaderSettingsActivity>(renderer, mappedInput);
     case SettingAction::OPDSBrowser:
       return std::make_unique<OpdsServerListActivity>(renderer, mappedInput);
-    case SettingAction::DropboxBrowser:
-      return std::make_unique<DropboxBrowserActivity>(renderer, mappedInput);
     case SettingAction::Network:
       return std::make_unique<WifiSelectionActivity>(renderer, mappedInput, false, true);
     case SettingAction::ClearCache:
@@ -64,8 +60,6 @@ std::unique_ptr<Activity> createActivityForAction(SettingAction action, GfxRende
       return std::make_unique<TextSettingsActivity>(renderer, mappedInput);
     case SettingAction::Language:
       return std::make_unique<LanguageSelectActivity>(renderer, mappedInput);
-    case SettingAction::Weather:
-      return std::make_unique<WeatherSettingsActivity>(renderer, mappedInput);
     case SettingAction::SystemInfo:
       return std::make_unique<SystemInformationActivity>(renderer, mappedInput);
     case SettingAction::SyncTime:

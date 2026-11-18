@@ -14,12 +14,11 @@
 #include <vector>
 
 #include "RecentBooksStore.h"
+#include "UiFonts.h"
 #include "components/UITheme.h"
 #include "components/icons/book.h"
 #include "components/icons/book24.h"
 #include "components/icons/cover.h"
-#include "components/icons/dropbox24.h"
-#include "components/icons/dropbox32.h"
 #include "components/icons/file24.h"
 #include "components/icons/folder.h"
 #include "components/icons/folder24.h"
@@ -30,10 +29,7 @@
 #include "components/icons/settings2.h"
 #include "components/icons/text24.h"
 #include "components/icons/transfer.h"
-#include "components/icons/weather24.h"
-#include "components/icons/weather32.h"
 #include "components/icons/wifi.h"
-#include "UiFonts.h"
 #include "fontIds.h"
 #include "util/BookArchiveUtils.h"
 #include "util/TabBarLayout.h"
@@ -104,10 +100,6 @@ const uint8_t* LyraTheme::iconForName(UIIcon icon, int size) {
         return Book24Icon;
       case UIIcon::File:
         return File24Icon;
-      case UIIcon::Weather:
-        return Weather24Icon;
-      case UIIcon::Dropbox:
-        return Dropbox24Icon;
       default:
         return nullptr;
     }
@@ -129,10 +121,6 @@ const uint8_t* LyraTheme::iconForName(UIIcon icon, int size) {
         return WifiIcon;
       case UIIcon::Hotspot:
         return HotspotIcon;
-      case UIIcon::Weather:
-        return Weather32Icon;
-      case UIIcon::Dropbox:
-        return Dropbox32Icon;
       default:
         return nullptr;
     }
@@ -450,9 +438,9 @@ void LyraTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
 }
 
 void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                                   const char* btn4, bool equalWidths) const {
-  drawCapsuleButtonHints(renderer, btn1, btn2, btn3, btn4, COMPACT_BUTTON_FONT_ID, LyraMetrics::values.buttonHintsHeight,
-                         equalWidths);
+                                const char* btn4, bool equalWidths) const {
+  drawCapsuleButtonHints(renderer, btn1, btn2, btn3, btn4, COMPACT_BUTTON_FONT_ID,
+                         LyraMetrics::values.buttonHintsHeight, equalWidths);
 }
 
 void LyraTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const {

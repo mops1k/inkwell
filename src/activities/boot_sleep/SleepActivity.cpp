@@ -16,8 +16,6 @@
 #include <PngStreamDecoder.h>
 #include <Serialization.h>
 #include <Txt.h>
-#include <WeatherClient.h>
-#include <WeatherIcons.h>
 #include <Xtc.h>
 #include <esp_system.h>
 
@@ -566,7 +564,6 @@ void SleepActivity::onEnter() {
     renderer.setOrientation(GfxRenderer::Portrait);
   }
   switch (SETTINGS.sleepScreen) {
-    case CrossPointSettings::SLEEP_SCREEN_MODE::CALENDAR_WEATHER:
     case CrossPointSettings::SLEEP_SCREEN_MODE::CALENDAR:
       return renderCalendarSleepScreen();
     case CrossPointSettings::SLEEP_SCREEN_MODE::QUOTE:
@@ -710,8 +707,7 @@ bool SleepActivity::renderQuoteSleepScreen() const {
 void SleepActivity::renderCalendarSleepScreen() const {
   // Network refresh may have freed the previous-frame buffer. Repaint both
   // panel planes on X4 instead of diffing against a potentially stale image.
-  const auto refreshMode =
-      renderer.hasSecondaryBuffer() ? finalSleepRefreshMode(renderer) : HalDisplay::HALF_REFRESH;
+  const auto refreshMode = renderer.hasSecondaryBuffer() ? finalSleepRefreshMode(renderer) : HalDisplay::HALF_REFRESH;
   const int width = renderer.getScreenWidth();
   const int height = renderer.getScreenHeight();
   const time_t now = HalClock::hasCurrentDate() ? HalClock::now() : 0;
@@ -732,8 +728,9 @@ void SleepActivity::renderCalendarSleepScreen() const {
       StrId::STR_SLEEP_CALENDAR_MONTH_OCT, StrId::STR_SLEEP_CALENDAR_MONTH_NOV, StrId::STR_SLEEP_CALENDAR_MONTH_DEC,
   };
   constexpr StrId weekdayNames[] = {
-      StrId::STR_WEATHER_DAY_MON, StrId::STR_WEATHER_DAY_TUE, StrId::STR_WEATHER_DAY_WED, StrId::STR_WEATHER_DAY_THU,
-      StrId::STR_WEATHER_DAY_FRI, StrId::STR_WEATHER_DAY_SAT, StrId::STR_WEATHER_DAY_SUN,
+      StrId::STR_SLEEP_CALENDAR_DAY_MON, StrId::STR_SLEEP_CALENDAR_DAY_TUE, StrId::STR_SLEEP_CALENDAR_DAY_WED,
+      StrId::STR_SLEEP_CALENDAR_DAY_THU, StrId::STR_SLEEP_CALENDAR_DAY_FRI, StrId::STR_SLEEP_CALENDAR_DAY_SAT,
+      StrId::STR_SLEEP_CALENDAR_DAY_SUN,
   };
   constexpr int daysPerMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
   const int year = date.tm_year + 1900;
@@ -765,56 +762,7 @@ void SleepActivity::renderCalendarSleepScreen() const {
     renderer.drawText(UI_12_FONT_ID, x + (cell - renderer.getTextWidth(UI_12_FONT_ID, number, style)) / 2,
                       y + (cell - renderer.getLineHeight(UI_12_FONT_ID)) / 2, number, !today, style);
   }
-  if (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CALENDAR_WEATHER) {
-    renderCalendarWeather(now, top + 7 * cell);
-  }
   renderer.displayBuffer(refreshMode);
-}
-
-void SleepActivity::renderCalendarWeather(time_t now, int calendarBottom) const {
-  // The default WeatherClient path only reads the saved forecast.
-  const auto weather = WeatherClient::getWeather(WEATHER_SETTINGS);
-  if (!weather.valid) return;
-
-  constexpr time_t secondsPerDay = 24 * 60 * 60;
-  const auto localDay = (now + weather.utcOffsetSeconds) / secondsPerDay;
-  const auto forecast = std::find_if(weather.daily.begin(), weather.daily.end(), [&](const DailyForecast& day) {
-    return day.date > 0 && (day.date + weather.utcOffsetSeconds) / secondsPerDay == localDay;
-  });
-  if (forecast == weather.daily.end()) return;
-
-  const char unit = WEATHER_SETTINGS.getTempUnit() == WeatherTempUnit::CELSIUS ? 'C' : 'F';
-  const bool currentIsFresh = weather.fetchedAt > 0 && now >= weather.fetchedAt && now - weather.fetchedAt <= 30 * 60;
-  char temperature[64];
-  if (currentIsFresh) {
-    snprintf(temperature, sizeof(temperature), "%+.0f °%c  ·  %+.0f / %+.0f °%c",
-             weather.current.temperature, unit, forecast->tempMin, forecast->tempMax, unit);
-  } else {
-    snprintf(temperature, sizeof(temperature), "%+.0f / %+.0f °%c", forecast->tempMin, forecast->tempMax, unit);
-  }
-  const auto iconType = currentIsFresh ? getWeatherIconType(weather.current.weatherCode, weather.current.isDay)
-                                      : getWeatherIconType(forecast->weatherCode, true);
-  const auto* icon = getWeatherIconLarge(iconType);
-  constexpr int iconSize = 32;
-  constexpr int iconGap = 12;
-  const int width = renderer.getScreenWidth();
-  const int textWidth = renderer.getTextWidth(UI_12_FONT_ID, temperature);
-  const int x = (width - iconSize - iconGap - textWidth) / 2;
-  const int y = (calendarBottom + renderer.getScreenHeight() - iconSize) / 2;
-  for (int row = 0; row < iconSize; ++row) {
-    for (int col = 0; col < iconSize; ++col) {
-      const int srcX = col * WEATHER_ICON_SIZE / iconSize;
-      const int srcY = row * WEATHER_ICON_SIZE / iconSize;
-      const auto byte = icon[srcY * (WEATHER_ICON_SIZE / 8) + srcX / 8];
-      if ((byte & (0x80 >> (srcX % 8))) == 0) renderer.drawPixel(x + col, y + row);
-    }
-  }
-  renderer.drawText(UI_12_FONT_ID, x + iconSize + iconGap,
-                    y + (iconSize - renderer.getLineHeight(UI_12_FONT_ID)) / 2, temperature);
-
-  const auto& location = WEATHER_SETTINGS.getLocationName();
-  const auto fitted = renderer.truncatedText(SMALL_FONT_ID, location.c_str(), width - 48);
-  renderer.drawCenteredText(SMALL_FONT_ID, y - renderer.getLineHeight(SMALL_FONT_ID) - 4, fitted.c_str());
 }
 
 void SleepActivity::renderDefaultSleepScreen() const {

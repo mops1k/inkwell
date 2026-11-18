@@ -27,9 +27,12 @@ struct ShelfScanOptions {
   std::string root = "/";
   // OPDS downloads go to a configurable folder (SETTINGS.opdsDownloadFolder),
   // not necessarily under /books: without walking it those books never reach
-  // the shelf. Empty means "no extra folder" (downloads land in the SD root,
-  // which the shallow root walk already covers).
+  // the shelf. Empty means "no extra folder"; the card root itself is walked
+  // down to rootDepth anyway, so detection does not depend on that setting.
   std::string downloadsRoot;
+  // How deep the SD root is walked. Two levels cover the usual "My Downloads",
+  // "Inbox", "Downloads/<series>" layouts without walking a whole card.
+  uint16_t rootDepth = 2;
   uint16_t maxDepth = kMaxLibraryDepth;
   size_t maxBooks = kMaxIndexBooks;
 };
@@ -56,7 +59,9 @@ class ShelfIndexer {
  private:
   struct WalkState;
 
-  void walkDirectory(WalkState& state, const std::string& dir, uint16_t depth, bool recursive);
+  // `depthLimit` bounds recursion for this subtree (root walk uses rootDepth,
+  // /books and the downloads folder use maxDepth).
+  void walkDirectory(WalkState& state, const std::string& dir, uint16_t depth, bool recursive, uint16_t depthLimit);
   void considerFile(WalkState& state, const std::string& path, uint32_t size, uint32_t fatDateTime, BookFormat format);
 
   MetadataFn fetch;

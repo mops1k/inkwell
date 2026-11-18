@@ -46,6 +46,11 @@ void CrossPointSettings::normalizeDependentSettings(CrossPointSettings& settings
   }
   if (settings.tiltPageTurn > 1) settings.tiltPageTurn = 0;
   if (settings.tiltDirection > 3) settings.tiltDirection = 0;
+  // A sleep-screen value with no enum entry left (a mode dropped together with its
+  // feature) resets to the default instead of staying unlabelled and unrenderable.
+  if (settings.sleepScreen >= SLEEP_SCREEN_MODE::SLEEP_SCREEN_MODE_COUNT) {
+    settings.sleepScreen = SLEEP_SCREEN_MODE::DARK;
+  }
   if (settings.sleepScreen == SLEEP_SCREEN_MODE::QUICK_RESUME) {
     settings.quickResumeSleepScreen = QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
   }

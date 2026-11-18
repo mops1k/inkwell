@@ -599,7 +599,7 @@ void OpdsBookBrowserActivity::render(RenderLock&&) {
 
   const int left = contentRect.x + BrowserList::leftPadding;
   const int right = contentRect.x + contentRect.width - BrowserList::rightPadding;
-  const auto hint = renderer.truncatedText(UI_HINT_FONT_ID, tr(STR_DROPBOX_HOME_HINT), right - left);
+  const auto hint = renderer.truncatedText(UI_HINT_FONT_ID, tr(STR_HOLD_BACK_FOR_HOME), right - left);
   renderer.drawText(UI_HINT_FONT_ID, left, listTop, hint.c_str());
   const int entriesTop = listTop + renderer.getLineHeight(UI_HINT_FONT_ID) + 4;
   const int rowHeight = BrowserList::rowHeight(renderer);

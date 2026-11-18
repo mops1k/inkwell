@@ -30,6 +30,19 @@ int progressFor(const std::string& path) {
   return stats->totalSeconds == 0 ? -1 : stats->progress;
 }
 
+// Sort order offered by the filter overlay, in display order. The last entry
+// reuses the existing "recent books" wording: a separate i18n key would say the
+// same thing twice.
+struct SortEntry {
+  shelf::SortKey key;
+  StrId label;
+};
+constexpr SortEntry kSortEntries[] = {
+    {shelf::SortKey::Title, StrId::STR_SORT_NAME},
+    {shelf::SortKey::Author, StrId::STR_AUTHOR},
+    {shelf::SortKey::LastOpened, StrId::STR_MENU_RECENT_BOOKS},
+};
+
 const char* filterLabel(shelf::FilterField field) {
   switch (field) {
     case shelf::FilterField::Author:
@@ -285,7 +298,19 @@ void ShelfActivity::rescanLibrary() {
 }
 
 void ShelfActivity::applyQuery() {
-  query_.apply(index_, view_);
+  // "Recently opened" needs a timestamp per book; the index itself does not
+  // store one (it would have to be rewritten on every read), so the epochs come
+  // from the reading history at query time.
+  std::vector<uint32_t> epochs;
+  if (query_.sort == shelf::SortKey::LastOpened) {
+    epochs.reserve(index_.books.size());
+    for (const auto& book : index_.books) {
+      const std::string docId = KOReaderDocumentId::calculateFromFilename(book.path);
+      const BookReadingStats* stats = docId.empty() ? nullptr : ReadingStatsStore::getInstance().findBook(docId);
+      epochs.push_back(stats == nullptr ? 0u : static_cast<uint32_t>(stats->lastReadEpoch));
+    }
+  }
+  query_.apply(index_, view_, epochs.empty() ? nullptr : &epochs);
   if (view_.empty()) {
     selected_ = 0;
   } else {
@@ -396,10 +421,9 @@ const std::vector<std::string>& ShelfActivity::overlayItems() const {
     }
     items.push_back(std::move(label));
   }
-  for (const shelf::SortKey key : {shelf::SortKey::Title, shelf::SortKey::Author}) {
-    const char* sortName = key == shelf::SortKey::Title ? tr(STR_SORT_NAME) : tr(STR_AUTHOR);
-    std::string label = std::string(tr(STR_SORT_BY)) + ": " + sortName;
-    if (query_.sort == key) label += " *";
+  for (const SortEntry& entry : kSortEntries) {
+    std::string label = std::string(tr(STR_SORT_BY)) + ": " + I18n::getInstance().get(entry.label);
+    if (query_.sort == entry.key) label += " *";
     items.push_back(std::move(label));
   }
   return items;
@@ -431,7 +455,7 @@ void ShelfActivity::activateOverlayItem(Overlay source, int index) {
       runBookAction(static_cast<BookAction>(index));
       return;
     case Overlay::FilterCategories: {
-      // 0 = all books, 1..3 = author/series/genre pickers, 4..5 = sort order.
+      // 0 = all books, 1..3 = author/series/genre pickers, 4.. = sort order.
       if (index == 0) {
         query_.filter.clear();
       } else if (index >= 1 && index <= 3) {
@@ -440,7 +464,9 @@ void ShelfActivity::activateOverlayItem(Overlay source, int index) {
         openFilterValues(kFields[index - 1]);
         return;
       } else {
-        query_.sort = index == 4 ? shelf::SortKey::Title : shelf::SortKey::Author;
+        const size_t sortIndex = static_cast<size_t>(index) - 4;
+        if (sortIndex >= sizeof(kSortEntries) / sizeof(kSortEntries[0])) break;
+        query_.sort = kSortEntries[sortIndex].key;
       }
       break;
     }

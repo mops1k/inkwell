@@ -42,7 +42,8 @@ struct ShelfIndexer::WalkState {
   bool truncated = false;
 };
 
-void ShelfIndexer::walkDirectory(WalkState& state, const std::string& dir, uint16_t depth, bool recursive) {
+void ShelfIndexer::walkDirectory(WalkState& state, const std::string& dir, uint16_t depth, bool recursive,
+                                 uint16_t depthLimit) {
   HalFile handle;
   if (!Storage.openFileForRead("SHELF", dir, handle) || !handle.isDirectory()) {
     LOG_DBG("SHELF", "Skipping unreadable %s", dir.c_str());
@@ -62,8 +63,8 @@ void ShelfIndexer::walkDirectory(WalkState& state, const std::string& dir, uint1
     if (entry.isDirectory()) {
       if (!recursive || state.truncated) continue;
       if (isSkippedDirectory(name)) continue;
-      if (depth >= state.options.maxDepth) continue;
-      walkDirectory(state, joinPath(dir, name), static_cast<uint16_t>(depth + 1), true);
+      if (depth >= depthLimit) continue;
+      walkDirectory(state, joinPath(dir, name), static_cast<uint16_t>(depth + 1), true, depthLimit);
       continue;
     }
 
@@ -134,17 +135,17 @@ ShelfScanStats ShelfIndexer::scan(ShelfIndex& index, const ShelfScanOptions& opt
 
   WalkState state{index, fresh, options, {}, 0, 0, false};
 
-  if (!options.root.empty()) walkDirectory(state, options.root, 0, false);
+  if (!options.root.empty()) walkDirectory(state, options.root, 0, true, options.rootDepth);
   // Same directory twice (root == booksRoot) would double-list every book.
   if (!options.booksRoot.empty() && options.booksRoot != options.root) {
-    walkDirectory(state, options.booksRoot, 0, true);
+    walkDirectory(state, options.booksRoot, 0, true, options.maxDepth);
   }
   // Books downloaded through OPDS land in the configured download folder; it is
   // walked recursively so periodicals/subfolders added by OPDS clients still
   // show up. Skipped when it coincides with a root already walked.
   if (!options.downloadsRoot.empty() && options.downloadsRoot != options.root &&
       options.downloadsRoot != options.booksRoot) {
-    walkDirectory(state, options.downloadsRoot, 0, true);
+    walkDirectory(state, options.downloadsRoot, 0, true, options.maxDepth);
   }
 
   if (state.openedDirs == 0) {

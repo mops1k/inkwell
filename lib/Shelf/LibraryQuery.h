@@ -25,6 +25,7 @@ FilterField filterFieldFromName(std::string_view name);
 enum class SortKey : uint8_t {
   Title = 0,
   Author,
+  LastOpened,
 };
 
 const char* sortKeyName(SortKey key);
@@ -53,7 +54,10 @@ struct LibraryQuery {
 
   // Fills `out` with indices into `index.books`, filtered and ordered. The
   // caller keeps the index alive; the shelf passes the result to the grid.
-  void apply(const ShelfIndex& index, std::vector<uint16_t>& out) const;
+  // `lastOpenedEpochs` is only needed for SortKey::LastOpened: one entry per
+  // index book, 0 = never opened (those sort after everything opened).
+  void apply(const ShelfIndex& index, std::vector<uint16_t>& out,
+             const std::vector<uint32_t>* lastOpenedEpochs = nullptr) const;
 };
 
 // Distinct values of `field` present in the index, deduplicated and sorted

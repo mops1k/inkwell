@@ -394,7 +394,7 @@ void WifiSelectionActivity::prepareForConnect() {
   // Use stable base MAC so hostname suffix is deterministic across WiFi states.
   uint8_t baseMac[6];
   readDeviceBaseMac(baseMac);
-  String hostname = "CrossPoint-Reader-" + formatMacCompact(baseMac);
+  String hostname = "Inkwell-Reader-" + formatMacCompact(baseMac);
   WiFi.setHostname(hostname.c_str());
 }
 

@@ -18,7 +18,7 @@ def main():
     firmware = (output / "firmware.bin").read_bytes()
     if b"CrossPoint version: " + version.encode() + b"\0" not in firmware:
         raise SystemExit("Firmware does not contain the exact release version")
-    shutil.copyfile(output / "firmware.bin", output / f"firmware-Paperio-Reader-{version}.bin")
+    shutil.copyfile(output / "firmware.bin", output / f"firmware-inkwell-{version}.bin")
     manifest = {
         "version": version,
         "source_commit": os.environ["GITHUB_SHA"],

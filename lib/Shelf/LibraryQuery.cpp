@@ -9,7 +9,7 @@ namespace shelf {
 namespace {
 
 constexpr FilterField kFields[] = {FilterField::Author, FilterField::Series, FilterField::Genre};
-constexpr SortKey kSortKeys[] = {SortKey::Title, SortKey::Author};
+constexpr SortKey kSortKeys[] = {SortKey::Title, SortKey::Author, SortKey::LastOpened};
 
 const std::string& fieldValue(const BookMeta& meta, FilterField field) {
   static const std::string empty;
@@ -69,6 +69,8 @@ const char* sortKeyName(SortKey key) {
   switch (key) {
     case SortKey::Author:
       return "author";
+    case SortKey::LastOpened:
+      return "lastOpened";
     case SortKey::Title:
       break;
   }
@@ -88,7 +90,8 @@ bool LibraryFilter::matches(const ShelfBook& book) const {
   return !value.empty() && value == this->value;
 }
 
-void LibraryQuery::apply(const ShelfIndex& index, std::vector<uint16_t>& out) const {
+void LibraryQuery::apply(const ShelfIndex& index, std::vector<uint16_t>& out,
+                         const std::vector<uint32_t>* lastOpenedEpochs) const {
   out.clear();
   out.reserve(index.books.size());
   for (size_t i = 0; i < index.books.size(); ++i) {
@@ -97,6 +100,29 @@ void LibraryQuery::apply(const ShelfIndex& index, std::vector<uint16_t>& out) co
     // that cannot be shown in one pass anyway (plan budget is ~100 books).
     if (i > UINT16_MAX) break;
     out.push_back(static_cast<uint16_t>(i));
+  }
+
+  const auto epochOf = [lastOpenedEpochs](uint16_t bookIndex) -> uint32_t {
+    if (lastOpenedEpochs == nullptr || bookIndex >= lastOpenedEpochs->size()) return 0;
+    return (*lastOpenedEpochs)[bookIndex];
+  };
+
+  if (sort == SortKey::LastOpened) {
+    // Newest first; books that were never opened keep their title order at the
+    // end instead of jumping between opened ones.
+    std::stable_sort(out.begin(), out.end(), [&](uint16_t a, uint16_t b) {
+      const uint32_t ea = epochOf(a);
+      const uint32_t eb = epochOf(b);
+      if (ea != eb) {
+        if (ea == 0) return false;
+        if (eb == 0) return true;
+        return ea > eb;
+      }
+      const int byTitle = compareFold(index.books[a].meta.title, index.books[b].meta.title);
+      if (byTitle != 0) return byTitle < 0;
+      return index.books[a].path < index.books[b].path;
+    });
+    return;
   }
 
   const auto keyOf = [this, &index](uint16_t bookIndex) -> const std::string& {

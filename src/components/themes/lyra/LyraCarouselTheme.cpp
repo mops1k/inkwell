@@ -20,7 +20,6 @@
 #include "components/icons/book.h"
 #include "components/icons/book24.h"
 #include "components/icons/cover.h"
-#include "components/icons/dropbox32.h"
 #include "components/icons/file24.h"
 #include "components/icons/folder.h"
 #include "components/icons/folder24.h"
@@ -31,7 +30,6 @@
 #include "components/icons/settings2.h"
 #include "components/icons/text24.h"
 #include "components/icons/transfer.h"
-#include "components/icons/weather32.h"
 #include "components/icons/wifi.h"
 #include "fontIds.h"
 #include "util/TabBarLayout.h"
@@ -77,10 +75,6 @@ const uint8_t* iconBitmapFor(UIIcon icon) {
       return BookIcon;
     case UIIcon::Library:
       return LibraryIcon;
-    case UIIcon::Weather:
-      return Weather32Icon;
-    case UIIcon::Dropbox:
-      return Dropbox32Icon;
     case UIIcon::Wifi:
       return WifiIcon;
     case UIIcon::Hotspot:

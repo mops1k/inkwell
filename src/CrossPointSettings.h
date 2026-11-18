@@ -28,7 +28,6 @@ class CrossPointSettings {
     QUICK_RESUME = 7,
     QUOTE = 8,
     CALENDAR = 9,
-    CALENDAR_WEATHER = 10,
     SLEEP_SCREEN_MODE_COUNT
   };
   enum SLEEP_SCREEN_COVER_MODE { FIT = 0, CROP = 1, SLEEP_SCREEN_COVER_MODE_COUNT };
@@ -316,7 +315,7 @@ class CrossPointSettings {
   static constexpr uint8_t MAX_SCREEN_MARGIN = 40;
   static constexpr uint8_t SCREEN_MARGIN_STEP = 5;
   uint8_t screenMargin = SCREEN_MARGIN_STEP;
-  uint8_t screenMarginTop = 0;     // Auto: use the original screen-margin behavior.
+  uint8_t screenMarginTop = 0;  // Auto: use the original screen-margin behavior.
   uint8_t screenMarginBottom = 0;
 
   int getTopTextPadding(int reservedHeight) const;
@@ -391,8 +390,6 @@ class CrossPointSettings {
   // Use clock and keep the LP timer running during deep sleep (GPIO13 HIGH)
   // so time can be accurately restored on wake. Increases sleep current by ~3-4 mA.
   uint8_t useClock = 0;
-  // Show the Weather home screen menu item (1 = enabled, 0 = hidden)
-  uint8_t useWeather = 1;
   // Include release candidate builds when checking for OTA updates.
   uint8_t includeBetaUpdates = 0;
 

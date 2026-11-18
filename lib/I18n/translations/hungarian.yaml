@@ -2,7 +2,7 @@ _language_name: "Magyar"
 _language_code: "HU"
 _order: "22"
 
-STR_CROSSPOINT: "Paperio Reader"
+STR_CROSSPOINT: "Inkwell"
 STR_BOOTING: "INDÍTÁS"
 STR_SLEEPING: "ALVÁS"
 STR_ENTERING_SLEEP: "Alvás..."

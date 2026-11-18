@@ -88,8 +88,6 @@ enum UIIcon {
   Library,
   Wifi,
   Hotspot,
-  Weather,
-  Dropbox
 };
 
 enum class KeyboardKeyType { Normal, Shift, Mode, Reveal, Space, Del, Ok, Disabled };
@@ -239,5 +237,5 @@ class BaseTheme {
 
  protected:
   void drawCapsuleButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                             const char* btn4, int fontId, int reservedHeight, bool equalWidths) const;
+                              const char* btn4, int fontId, int reservedHeight, bool equalWidths) const;
 };

@@ -28,7 +28,6 @@
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
-#include "activities/browser/DropboxBrowserActivity.h"
 #include "activities/reader/ReaderActivity.h"
 #include "components/UITheme.h"
 #include "components/themes/lyra/Lyra3CoversTheme.h"
@@ -126,7 +125,7 @@ int getHomeCoverRenderHeight(const HomeScreenLayout& layout) {
 // dispatches Confirm based on action) and render() (which draws labels/icons).
 void HomeActivity::rebuildMenuEntries() {
   menuEntries.clear();
-  menuEntries.reserve(9);
+  menuEntries.reserve(7);
 
   menuEntries.push_back({MenuAction::Shelf, StrId::STR_SHELF, Library});
   menuEntries.push_back({MenuAction::FileBrowser, StrId::STR_BROWSE_FILES, Folder});
@@ -139,14 +138,10 @@ void HomeActivity::rebuildMenuEntries() {
   if (!GLOBAL_BOOKMARKS.isEmpty()) {
     menuEntries.push_back({MenuAction::GlobalBookmarks, StrId::STR_GLOBAL_BOOKMARKS, Book});
   }
-  menuEntries.push_back({MenuAction::DropboxBrowser, StrId::STR_DROPBOX, Dropbox});
   if (hasOpdsServers) {
     menuEntries.push_back({MenuAction::OpdsBrowser, StrId::STR_OPDS_BROWSER, Library});
   }
   menuEntries.push_back({MenuAction::FileTransfer, StrId::STR_FILE_TRANSFER, Transfer});
-  if (SETTINGS.useWeather) {
-    menuEntries.push_back({MenuAction::Weather, StrId::STR_WEATHER, Weather});
-  }
   menuEntries.push_back({MenuAction::Settings, StrId::STR_SETTINGS_TITLE, Settings});
   menuEntriesDirty = false;
 }
@@ -1081,17 +1076,11 @@ void HomeActivity::dispatchMenuAction(MenuAction action) {
     case MenuAction::GlobalBookmarks:
       activityManager.goToGlobalBookmarks();
       break;
-    case MenuAction::DropboxBrowser:
-      activityManager.replaceActivity(std::make_unique<DropboxBrowserActivity>(renderer, mappedInput));
-      break;
     case MenuAction::OpdsBrowser:
       activityManager.goToBrowser();
       break;
     case MenuAction::FileTransfer:
       activityManager.goToFileTransfer();
-      break;
-    case MenuAction::Weather:
-      activityManager.goToWeather();
       break;
     case MenuAction::Settings:
       activityManager.goToSettings();

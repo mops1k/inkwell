@@ -24,7 +24,6 @@ class SleepActivity final : public Activity {
  private:
   void renderDefaultSleepScreen() const;
   void renderCalendarSleepScreen() const;
-  void renderCalendarWeather(time_t now, int calendarBottom) const;
   bool renderQuoteSleepScreen() const;
   void renderCustomSleepScreen() const;
   void renderCoverSleepScreen() const;

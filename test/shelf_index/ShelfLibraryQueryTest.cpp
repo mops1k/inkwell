@@ -109,12 +109,37 @@ TEST(LibraryQuery, CollectsDistinctValues) {
   EXPECT_TRUE(values.empty());
 }
 
+TEST(LibraryQuery, SortsByLastOpened) {
+  const shelf::ShelfIndex index = makeIndex();
+  std::vector<uint16_t> out;
+
+  // index order: 0 Братья, 1 Анна, 2 Дюна, 3 Заметки. 0 = never opened.
+  std::vector<uint32_t> epochs(index.books.size(), 0);
+  epochs[0] = 1000;
+  epochs[2] = 3000;
+  epochs[1] = 2000;
+
+  shelf::LibraryQuery byRecent;
+  byRecent.sort = shelf::SortKey::LastOpened;
+  byRecent.apply(index, out, &epochs);
+  ASSERT_EQ(index.books.size(), out.size());
+  EXPECT_EQ("Дюна", index.books[out[0]].meta.title);  // newest first
+  EXPECT_EQ("Анна Каренина", index.books[out[1]].meta.title);
+  EXPECT_EQ("Братья Карамазовы", index.books[out[2]].meta.title);
+  EXPECT_EQ("Заметки", index.books[out[3]].meta.title);  // never opened goes last
+
+  // Without epoch data the sort degrades to title order, never to garbage.
+  byRecent.apply(index, out, nullptr);
+  ASSERT_EQ(index.books.size(), out.size());
+  EXPECT_EQ("Анна Каренина", index.books[out[0]].meta.title);
+}
+
 TEST(LibraryQuery, NamesRoundTrip) {
   for (const auto field : {shelf::FilterField::Author, shelf::FilterField::Series, shelf::FilterField::Genre}) {
     EXPECT_EQ(field, shelf::filterFieldFromName(shelf::filterFieldName(field)));
   }
   EXPECT_EQ(shelf::FilterField::None, shelf::filterFieldFromName("nonsense"));
-  for (const auto key : {shelf::SortKey::Title, shelf::SortKey::Author}) {
+  for (const auto key : {shelf::SortKey::Title, shelf::SortKey::Author, shelf::SortKey::LastOpened}) {
     EXPECT_EQ(key, shelf::sortKeyFromName(shelf::sortKeyName(key)));
   }
   EXPECT_EQ(shelf::SortKey::Title, shelf::sortKeyFromName("nonsense"));

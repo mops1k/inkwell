@@ -117,7 +117,7 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
   http.setAllowInsecureFallback(allowInsecureFallback);
   http.setAllowCertificateDateErrors(!clockReady);
   http.setTimeout(sink.timeoutMs);
-  http.setUserAgent("PaperioReader-ESP32-" CROSSPOINT_VERSION);
+  http.setUserAgent("Inkwell-ESP32-" CROSSPOINT_VERSION);
   if (!username.empty() && !password.empty()) {
     http.setBasicAuth(username, password);
   }
@@ -203,7 +203,7 @@ HttpDownloader::DownloadError runGetSecureOnSession(HttpDownloader::Session& ses
     impl->http = std::make_unique<crosspoint::SecureHttpClient>();
     impl->http->setCACert(CROSSPOINT_ROOTS_PEM);
     impl->http->setTimeout(HTTP_TIMEOUT_MS);
-    impl->http->setUserAgent("PaperioReader-ESP32-" CROSSPOINT_VERSION);
+    impl->http->setUserAgent("Inkwell-ESP32-" CROSSPOINT_VERSION);
   }
   impl->http->setAllowInsecureFallback(allowInsecureFallback);
   impl->http->setAllowCertificateDateErrors(!clockReady);
