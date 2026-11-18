@@ -179,7 +179,7 @@ void ShelfScene::render(GfxRenderer& renderer) const {
   } else if (!view.empty()) {
     subtitle = "Удержание «Назад»: фильтры";
   }
-  theme.drawHeader(renderer, Rect{content.x, content.y, content.width, metrics.headerHeight}, "Полка",
+  theme.drawHeader(renderer, Rect{content.x, content.y, content.width, metrics.headerHeight}, "Библиотека",
                    subtitle.empty() ? nullptr : subtitle.c_str());
 
   const shelfui::GridMetrics grid = gridMetrics(renderer);

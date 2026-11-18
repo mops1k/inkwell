@@ -907,7 +907,7 @@ STR_DROPBOX_FOLDER: "Папка"
 STR_DROPBOX_HOME_HINT: "Удерживайте «Назад» для выхода"
 STR_DROPBOX_DEPTH_LIMIT: "Достигнут предел вложенности папок. Вернитесь на уровень выше."
 
-STR_SHELF: "Полка"
+STR_SHELF: "Библиотека"
 STR_SHELF_SCANNING: "Сканирование библиотеки..."
 STR_SHELF_EMPTY: "Книг не найдено"
 STR_SHELF_HINT: "Влево/вправо выбор, OK открыть, удержание OK меню"

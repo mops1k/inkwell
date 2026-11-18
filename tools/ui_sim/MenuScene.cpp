@@ -9,9 +9,9 @@ namespace uisim {
 
 MenuScene::MenuScene() {
   // The same entries HomeActivity puts under the recent-books carousel, in the
-  // same order: the shelf first, then the file browser and the settings menu.
+  // same order: the library first, then the file browser and the settings menu.
   items_ = {
-      {"Полка", Library},      {"Недавние", Recent},          {"Файлы", Folder},
+      {"Библиотека", Library}, {"Недавние", Recent},          {"Файлы", Folder},
       {"Настройки", Settings}, {"Передача файлов", Transfer}, {"Wi-Fi", Wifi},
   };
 }
