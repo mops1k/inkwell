@@ -1,0 +1,10 @@
+--- hw/i2c/meson.build	2026-11-09 17:14:34.000000000 +0300
++++ /home/mops1k/Development/xteink-shelf/.venv/qemu/src/hw/i2c/meson.build	2026-11-18 16:52:12.902569159 +0300
+@@ -16,6 +16,7 @@
+ i2c_ss.add(when: 'CONFIG_OMAP', if_true: files('omap_i2c.c'))
+ i2c_ss.add(when: 'CONFIG_PPC4XX', if_true: files('ppc4xx_i2c.c'))
+ i2c_ss.add(when: 'CONFIG_XTENSA_ESP32', if_true: files('esp32_i2c.c'))
++i2c_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files('esp32_i2c.c'))
+ i2c_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files('esp32_i2c.c'))
+ i2c_ss.add(when: 'CONFIG_PCA954X', if_true: files('i2c_mux_pca954x.c'))
+ i2c_ss.add(when: 'CONFIG_PMBUS', if_true: files('pmbus_device.c'))

@@ -1,0 +1,45 @@
+--- hw/riscv/esp32c3.c	2026-11-09 17:14:34.000000000 +0300
++++ /home/mops1k/Development/xteink-shelf/.venv/qemu/src/hw/riscv/esp32c3.c	2026-11-18 16:52:39.191186927 +0300
+@@ -40,6 +40,7 @@
+ #include "hw/timer/esp32c3_timg.h"
+ #include "hw/timer/esp32c3_systimer.h"
+ #include "hw/ssi/esp32c3_spi.h"
++#include "hw/i2c/esp32_i2c.h"
+ #include "hw/misc/esp32c3_rtc_cntl.h"
+ #include "hw/misc/esp32c3_aes.h"
+ #include "hw/misc/esp32c3_rsa.h"
+@@ -86,6 +87,7 @@
+     ESP32C3TimgState timg[2];
+     ESP32C3SysTimerState systimer;
+     ESP32C3SpiState spi1;
++    Esp32I2CState i2c;
+     ESP32C3RtcCntlState rtccntl;
+     ESP32C3UsbJtagState jtag;
+     ESPRgbState rgb;
+@@ -423,6 +425,7 @@
+     object_initialize_child(OBJECT(machine), "timg1", &ms->timg[1], TYPE_ESP32C3_TIMG);
+     object_initialize_child(OBJECT(machine), "systimer", &ms->systimer, TYPE_ESP32C3_SYSTIMER);
+     object_initialize_child(OBJECT(machine), "spi1", &ms->spi1, TYPE_ESP32C3_SPI);
++    object_initialize_child(OBJECT(machine), "i2c", &ms->i2c, TYPE_ESP32_I2C);
+     object_initialize_child(OBJECT(machine), "rtccntl", &ms->rtccntl, TYPE_ESP32C3_RTC_CNTL);
+     object_initialize_child(OBJECT(machine), "jtag", &ms->jtag, TYPE_ESP32C3_JTAG);
+     object_initialize_child(OBJECT(machine), "rgb", &ms->rgb, TYPE_ESP_RGB);
+@@ -451,6 +454,18 @@
+     /* Initialize OpenCores Ethernet controller now sicne it requires the interrupt matrix */
+     esp32c3_init_openeth(ms);
+ 
++    /* I2C controller: the model (hw/i2c/esp32_i2c.c) ships in the tree but the C3
++     * machine never instantiated it, which is why the firmware's gauge/RTC reads
++     * used to fail with ESP_ERR_INVALID_STATE. Wiring it is the Q0 prototype that
++     * proves the interrupt-matrix input path works for peripheral models. */
++    {
++        sysbus_realize(SYS_BUS_DEVICE(&ms->i2c), &error_fatal);
++        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->i2c), 0);
++        memory_region_add_subregion_overlap(sys_mem, DR_REG_I2C_EXT_BASE, mr, 0);
++        sysbus_connect_irq(SYS_BUS_DEVICE(&ms->i2c), 0,
++                           qdev_get_gpio_in(intmatrix_dev, ETS_I2C_EXT0_INTR_SOURCE));
++    }
++
+     /* USB Serial JTAG realization */
+     {
+         sysbus_realize(SYS_BUS_DEVICE(&ms->jtag), &error_fatal);
