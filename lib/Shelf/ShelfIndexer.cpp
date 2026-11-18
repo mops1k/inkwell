@@ -142,6 +142,22 @@ ShelfScanStats ShelfIndexer::scan(ShelfIndex& index, const ShelfScanOptions& opt
 
   state.stats.removed = index.books.size() > state.matchedOld ? index.books.size() - state.matchedOld : 0;
   state.stats.truncated = state.truncated;
+
+  if (removed != nullptr && !index.books.empty()) {
+    // Report every book that was in the old index but no longer on the card, so
+    // the caller can drop its caches. Linear in books-per-scan (target ~100).
+    for (const auto& previous : index.books) {
+      bool stillPresent = false;
+      for (const auto& book : fresh) {
+        if (book.path == previous.path) {
+          stillPresent = true;
+          break;
+        }
+      }
+      if (!stillPresent) removed(removedCtx, previous.path);
+    }
+  }
+
   index.books = std::move(fresh);
   return state.stats;
 }

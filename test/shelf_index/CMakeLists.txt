@@ -12,6 +12,7 @@ set(SHELF_TEST_SOURCES
   ShelfJsonTest.cpp
   ShelfStoreTest.cpp
   ShelfIndexerTest.cpp
+  ShelfCoverPolicyTest.cpp
   ShelfFb2MetadataTest.cpp
   ShelfXtcMetadataTest.cpp
   ShelfEpubMetadataTest.cpp
@@ -24,6 +25,7 @@ set(SHELF_TEST_SOURCES
   ${REPO_ROOT}/lib/Shelf/ShelfIndex.cpp
   ${REPO_ROOT}/lib/Shelf/ShelfIndexStore.cpp
   ${REPO_ROOT}/lib/Shelf/ShelfIndexer.cpp
+  ${REPO_ROOT}/lib/Shelf/CoverPolicy.cpp
   ${REPO_ROOT}/lib/Shelf/Fb2Metadata.cpp
   ${REPO_ROOT}/lib/Shelf/XtcMetadata.cpp
   ${REPO_ROOT}/lib/Shelf/BookMetadata.cpp

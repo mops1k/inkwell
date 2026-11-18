@@ -15,6 +15,10 @@ namespace shelf {
 // wires readBookMetadata(), tests drive the walk/merge logic with a fake.
 using MetadataFn = bool (*)(void* ctx, const std::string& path, BookFormat format, BookMeta& out);
 
+// Called once per book that existed in the previous index but is gone from the
+// card, so the caller can drop that book's thumbnail cache.
+using RemovedFn = void (*)(void* ctx, const std::string& path);
+
 struct ShelfScanOptions {
   // Plan Ф1: "/books" recursively (where books normally live) plus the SD root
   // non-recursively, so a book dropped straight onto the card is still found
@@ -39,7 +43,8 @@ struct ShelfScanStats {
 // keeps a 100-book rescan in the tens of milliseconds instead of minutes.
 class ShelfIndexer {
  public:
-  ShelfIndexer(MetadataFn metadataFn, void* ctx) : fetch(metadataFn), fetchCtx(ctx) {}
+  ShelfIndexer(MetadataFn metadataFn, void* ctx, RemovedFn removedFn = nullptr, void* removedCtx = nullptr)
+      : fetch(metadataFn), fetchCtx(ctx), removed(removedFn), removedCtx(removedCtx) {}
 
   ShelfScanStats scan(ShelfIndex& index, const ShelfScanOptions& options);
 
@@ -51,6 +56,8 @@ class ShelfIndexer {
 
   MetadataFn fetch;
   void* fetchCtx;
+  RemovedFn removed;
+  void* removedCtx;
 };
 
 }  // namespace shelf

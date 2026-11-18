@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include "BookNameMeta.h"
 #include "ShelfIndexer.h"
@@ -39,6 +40,8 @@ size_t countPaths(const shelf::ShelfIndex& index, const std::string& needle) {
   }
   return found;
 }
+
+void recordRemoved(void* ctx, const std::string& path) { static_cast<std::vector<std::string>*>(ctx)->push_back(path); }
 
 }  // namespace
 
@@ -173,4 +176,27 @@ TEST(ShelfIndexer, FailedMetadataFallsBackToFilename) {
   ASSERT_EQ(1u, index.books.size());
   EXPECT_FALSE(index.books.front().metaOk);
   EXPECT_EQ("broken", index.books.front().meta.title);
+}
+
+// The shelf removes a deleted book's thumbnail cache, so the indexer has to name
+// exactly the books that disappeared — not the ones that stayed or the new ones.
+TEST(ShelfIndexer, ReportsRemovedBooksOnly) {
+  shelftest::TempDir dir("indexer_report_removed");
+  writeFile(dir.join("books/a.md"), "one");
+  writeFile(dir.join("books/b.md"), "two");
+
+  FakeMeta ctx;
+  std::vector<std::string> removedPaths;
+  shelf::ShelfIndexer indexer(fakeMetadata, &ctx, recordRemoved, &removedPaths);
+  shelf::ShelfIndex index;
+  indexer.scan(index, optionsFor(dir));
+  ASSERT_TRUE(removedPaths.empty()) << "nothing was removed on the first scan";
+
+  std::filesystem::remove(dir.join("books/b.md"));
+  writeFile(dir.join("books/c.md"), "three");
+  indexer.scan(index, optionsFor(dir));
+
+  ASSERT_EQ(1u, removedPaths.size());
+  EXPECT_NE(std::string::npos, removedPaths.front().find("b.md"));
+  EXPECT_EQ(2u, index.books.size());
 }
