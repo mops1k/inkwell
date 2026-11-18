@@ -17,7 +17,7 @@
 
 #include "Png.h"
 #include "Scenario.h"
-#include "ShelfDemoScene.h"
+#include "ShelfScene.h"
 
 namespace {
 
@@ -71,7 +71,7 @@ int main(int argc, char** argv) {
   renderer.begin();  // binds the framebuffer, as on the device
   registerUiFonts(renderer);
 
-  uisim::ShelfDemoScene scene;
+  uisim::ShelfScene scene;
   std::vector<std::string> keys;
   if (!options.scenario.empty()) {
     keys = uisim::readScenarioKeys(options.scenario);

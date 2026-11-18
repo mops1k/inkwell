@@ -25,6 +25,7 @@ struct Rect;
 class HomeActivity final : public Activity {
  public:
   enum class MenuAction {
+    Shelf,
     FileBrowser,
     Recents,
     GlobalBookmarks,

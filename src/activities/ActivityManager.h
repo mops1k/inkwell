@@ -21,7 +21,7 @@ struct HomeSleepState;
 
 // Where a "child" activity (launched via one of the replaceWith* helpers) should route
 // control when it exits successfully. See ActivityManager::returnFromChild().
-enum class ReturnTo : uint8_t { Home, FileBrowser, RecentBooks, GlobalBookmarks };
+enum class ReturnTo : uint8_t { Home, FileBrowser, RecentBooks, GlobalBookmarks, Shelf };
 
 // Minimal state the returning parent needs to restore its previous view (directory,
 // focused item, list index, or bookmark selection). Kept as a plain struct stored by
@@ -133,6 +133,7 @@ class ActivityManager {
   void goToKOReaderSettings();
   void goToFileBrowser(std::string path = {}, std::string focusName = {});
   void goToRecentBooks(int focusIndex = -1);
+  void goToShelf(std::string focusBookPath = {});
   void goToGlobalBookmarks();
   void goToGlobalBookmarks(ReturnHint hint);
   void goToBrowser();

@@ -128,6 +128,7 @@ void HomeActivity::rebuildMenuEntries() {
   menuEntries.clear();
   menuEntries.reserve(9);
 
+  menuEntries.push_back({MenuAction::Shelf, StrId::STR_SHELF, Library});
   menuEntries.push_back({MenuAction::FileBrowser, StrId::STR_BROWSE_FILES, Folder});
   // In Minimal the recent-books grid is promoted to the second bottom button,
   // while the file browser remains available here in the menu. Avoid showing a
@@ -1069,6 +1070,9 @@ void HomeActivity::dispatchMenuAction(MenuAction action) {
   activityManager.setReturnHint(std::move(hint));
 
   switch (action) {
+    case MenuAction::Shelf:
+      activityManager.goToShelf();
+      break;
     case MenuAction::FileBrowser:
       activityManager.goToFileBrowser();
       break;

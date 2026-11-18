@@ -31,6 +31,7 @@
 #include "settings/KOReaderSettingsActivity.h"
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsActivity.h"
+#include "shelf/ShelfActivity.h"
 #include "util/FullScreenMessageActivity.h"
 #include "weather/WeatherActivity.h"
 
@@ -482,6 +483,9 @@ void ActivityManager::returnFromChild() {
     case ReturnTo::GlobalBookmarks:
       goToGlobalBookmarks(std::move(hint));
       break;
+    case ReturnTo::Shelf:
+      goToShelf(std::move(hint.selectName));
+      break;
     case ReturnTo::Home:
     default:
       goHome(std::move(hint.selectName), hint.selectIndex);
@@ -501,6 +505,10 @@ void ActivityManager::goToFullScreenMessage(std::string message, EpdFontFamily::
 }
 
 void ActivityManager::goToWeather() { replaceActivity(std::make_unique<WeatherActivity>(renderer, mappedInput)); }
+
+void ActivityManager::goToShelf(std::string focusBookPath) {
+  replaceActivity(std::make_unique<ShelfActivity>(renderer, mappedInput, std::move(focusBookPath)));
+}
 
 void ActivityManager::goHome(std::string focusBookPath, int focusSelectorIndex) {
   hasReturnHint = false;

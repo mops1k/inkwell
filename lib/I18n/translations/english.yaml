@@ -1015,3 +1015,9 @@ STR_DROPBOX_API_ERROR: "Could not open the folder or download the book. Check Dr
 STR_DROPBOX_FOLDER: "Folder"
 STR_DROPBOX_HOME_HINT: "Hold Back to go Home"
 STR_DROPBOX_DEPTH_LIMIT: "Folder navigation limit reached. Go back to a parent folder."
+
+STR_SHELF: "Shelf"
+STR_SHELF_SCANNING: "Scanning library..."
+STR_SHELF_EMPTY: "No books found"
+STR_SHELF_HINT: "Left/Right select, OK open, hold OK menu"
+STR_REFRESH_COVER: "Refresh Cover"

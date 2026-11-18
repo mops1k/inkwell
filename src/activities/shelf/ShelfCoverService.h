@@ -25,6 +25,10 @@ class ShelfCoverService {
   // Adapter for ShelfIndexer's onBookRemoved hook (function pointer, no heap).
   static void forgetBookThunk(void* ctx, const std::string& path);
 
+  // Drop only the book's cover thumbnails (thumb_* files) so the next pass
+  // regenerates them, leaving the reader's cached parsing artifacts in place.
+  static void refreshCovers(const std::string& bookPath);
+
  private:
   struct Attempt {
     std::string thumbPath;

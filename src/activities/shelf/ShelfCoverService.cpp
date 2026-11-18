@@ -3,6 +3,9 @@
 #include <HalStorage.h>
 #include <Logging.h>
 
+#include <string>
+#include <vector>
+
 #include "activities/reader/ReaderActivity.h"
 
 namespace {
@@ -104,3 +107,31 @@ void ShelfCoverService::forgetBook(const std::string& bookPath) {
 }
 
 void ShelfCoverService::forgetBookThunk(void*, const std::string& path) { forgetBook(path); }
+
+void ShelfCoverService::refreshCovers(const std::string& bookPath) {
+  const std::string cacheDir = ReaderActivity::bookCacheDir(bookPath);
+  if (cacheDir.empty()) return;
+
+  FsFile dir = Storage.open(cacheDir.c_str());
+  if (!dir || !dir.isDirectory()) {
+    if (dir) dir.close();
+    return;
+  }
+
+  // Collect first, remove after the directory is closed: removing an entry
+  // during iteration makes SdFat skip the following one.
+  std::vector<std::string> thumbs;
+  char name[128];
+  for (FsFile file = dir.openNextFile(); file; file = dir.openNextFile()) {
+    file.getName(name, sizeof(name));
+    file.close();
+    const std::string entry(name);
+    if (entry.rfind("thumb_", 0) == 0) thumbs.push_back(cacheDir + "/" + entry);
+  }
+  dir.close();
+
+  for (const std::string& path : thumbs) {
+    if (!Storage.remove(path.c_str())) LOG_DBG("SHELF", "Could not remove %s", path.c_str());
+  }
+  LOG_DBG("SHELF", "Cover thumbnails refreshed for %s (%zu file(s))", bookPath.c_str(), thumbs.size());
+}

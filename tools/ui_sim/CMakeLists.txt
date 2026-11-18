@@ -19,9 +19,10 @@ set(UISIM_SOURCES
   main.cpp
   Png.cpp
   Scenario.cpp
-  ShelfDemoScene.cpp
+  ShelfScene.cpp
   host/HostEsp.cpp
   host/Stubs.cpp
+  ${REPO_ROOT}/src/activities/shelf/ShelfGridRenderer.cpp
   ${REPO_ROOT}/lib/GfxRenderer/GfxRenderer.cpp
   ${REPO_ROOT}/lib/GfxRenderer/Bitmap.cpp
   ${REPO_ROOT}/lib/GfxRenderer/BitmapHelpers.cpp
