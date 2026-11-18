@@ -128,3 +128,7 @@ add_subdirectory(panic_snapshot)
 # Shelf index (plan p_e2f3b165ca94, phase Ф1): real EPUB/FB2/XTC metadata over
 # real files, atomic on-SD JSON storage.
 add_subdirectory(shelf_index)
+
+# Host UI simulator (plan p_46c273a4a2e1, phase E1): renders the shelf demo
+# scene through the real GfxRenderer and fails ctest on a blank frame.
+add_subdirectory(${REPO_ROOT}/tools/ui_sim ${CMAKE_CURRENT_BINARY_DIR}/ui_sim)

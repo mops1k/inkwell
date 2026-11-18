@@ -111,8 +111,12 @@ class GfxRenderer {
     uint8_t w;
     uint8_t h;
   };
-  // Keeps the documented budget honest if a field is ever added.
+  // Keeps the documented budget honest if a field is ever added. The budget is
+  // an ESP32-C3 (32-bit) statement: on a 64-bit host build (tools/ui_sim) the
+  // pointer field is twice as wide and the entry no longer fits by design.
+#if !defined(__LP64__) && !defined(_WIN64)
   static_assert(sizeof(ScaledGlyphEntry) <= 16, "scaled-glyph entry grew; update the cache budget comment");
+#endif
   // Sized from measurement, not guesswork: a page of this corpus needs 45-58
   // distinct renditions (three font groups x ~40 glyphs, per the prewarm logs)
   // averaging ~40 bytes of mask each. 48 entries reset on every pass — the table,
