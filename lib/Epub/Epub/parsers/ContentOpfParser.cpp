@@ -407,6 +407,15 @@ void ContentOpfParser::startElement(void* userData, const char* name, const char
     return;
   }
 
+  if (self->state == IN_METADATA && strcmp(name, "dc:subject") == 0) {
+    // Only the first subject becomes the book's genre: EPUBs often list several
+    // магазинные categories and the shelf filters by exactly one.
+    if (self->genre.empty()) {
+      self->state = IN_BOOK_GENRE;
+    }
+    return;
+  }
+
   if (self->state == IN_PACKAGE && isManifestTag(name)) {
     self->state = IN_MANIFEST;
     if (!Storage.openFileForWrite("COF", self->cachePath + itemCacheFile, self->tempItemStore)) {
@@ -689,6 +698,14 @@ void ContentOpfParser::characterData(void* userData, const char* s, const int le
     return;
   }
 
+  if (self->state == IN_BOOK_GENRE) {
+    if (self->genre.size() < MAX_DESCRIPTION_LENGTH) {
+      const size_t remaining = MAX_DESCRIPTION_LENGTH - self->genre.size();
+      self->genre.append(s, std::min(static_cast<size_t>(len), remaining));
+    }
+    return;
+  }
+
   if (self->state == IN_BOOK_SERIES) {
     if (self->series.size() < MAX_DESCRIPTION_LENGTH) {
       const size_t remaining = MAX_DESCRIPTION_LENGTH - self->series.size();
@@ -751,6 +768,12 @@ void ContentOpfParser::endElement(void* userData, const char* name) {
 
   if (self->state == IN_BOOK_DESCRIPTION && strcmp(name, "dc:description") == 0) {
     self->description = stripHtml(self->description);
+    self->state = IN_METADATA;
+    return;
+  }
+
+  if (self->state == IN_BOOK_GENRE && strcmp(name, "dc:subject") == 0) {
+    self->genre = trim(self->genre);
     self->state = IN_METADATA;
     return;
   }

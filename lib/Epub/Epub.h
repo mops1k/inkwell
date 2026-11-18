@@ -153,6 +153,7 @@ class Epub {
   const std::string& getSeries() const;
   const std::string& getSeriesIndex() const;
   const std::string& getDescription() const;
+  const std::string& getGenre() const;
   std::string getCoverBmpPath(bool cropped = false) const;
   std::string getCoverImageCachePath() const;
   // Returns the raw ZIP entry path for the cover image (empty if none).

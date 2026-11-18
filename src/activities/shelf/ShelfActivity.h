@@ -2,6 +2,7 @@
 
 #include <ShelfIndex.h>
 #include <ShelfIndexStore.h>
+#include <ShelfStateStore.h>
 
 #include <string>
 #include <utility>
@@ -32,25 +33,43 @@ class ShelfActivity final : public Activity {
  private:
   enum class Mode : uint8_t { Loading, Scanning, Grid };
 
+  // Overlays share one list widget: the book menu and the filter picker differ
+  // only in their item labels and the action a Confirm runs.
+  enum class Overlay : uint8_t { None, BookMenu, FilterCategories, FilterValues };
+
   void rebuildIndex();
   void updateLayout();  // content rect + grid metrics for the current theme chrome
   void refreshPage();   // rebuilds cells_ for the current page, resolves covers
+  void applyQuery();    // re-filters/sorts the index into view_ and clamps the focus
   void moveSelection(int delta);
   void openSelected();
   void runBookAction(BookAction action);
+  void openFilters();
+  void openFilterValues(shelf::FilterField field);
+  const std::vector<std::string>& overlayItems() const;
+  void activateOverlayItem(Overlay source, int index);
   void drawMenu();
+  void drawOverlayList(const std::vector<std::string>& items, int selected) const;
+  void saveState();
 
   const shelf::ShelfBook* selectedBook() const;
 
   shelf::ShelfIndex index_;
   shelf::ShelfIndexStore store_;
+  shelf::ShelfStateStore stateStore_;
+  shelf::LibraryQuery query_;
   ShelfCoverService covers_;
   shelfui::GridMetrics metrics_;
   std::vector<shelfui::CellView> cells_;
+  // Indices into index_.books in display order; the grid talks only to this.
+  std::vector<uint16_t> view_;
+  // Values of the currently opened filter field (FilterValues overlay only).
+  std::vector<std::string> filterValues_;
+  shelf::FilterField pendingField_ = shelf::FilterField::None;
 
   std::string focusBookPath_;
   Mode mode_ = Mode::Loading;
-  bool menuOpen_ = false;
+  Overlay overlay_ = Overlay::None;
   int menuIndex_ = 0;
-  int selected_ = 0;  // flat index into index_.books
+  int selected_ = 0;  // index into view_
 };

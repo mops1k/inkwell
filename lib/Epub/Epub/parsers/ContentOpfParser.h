@@ -25,6 +25,7 @@ class ContentOpfParser final : public Print {
     IN_BOOK_AUTHOR,
     IN_BOOK_LANGUAGE,
     IN_BOOK_DESCRIPTION,
+    IN_BOOK_GENRE,
     IN_BOOK_SERIES,
     IN_BOOK_SERIES_INDEX,
     IN_MANIFEST,
@@ -145,6 +146,7 @@ class ContentOpfParser final : public Print {
   std::string author;
   std::string language;
   std::string description;
+  std::string genre;  // first dc:subject, for the shelf's genre filter
   std::string series;
   std::string seriesIndex;
   std::string tocNcxPath;
@@ -157,8 +159,12 @@ class ContentOpfParser final : public Print {
 
   explicit ContentOpfParser(const std::string& cachePath, const std::string& baseContentPath, const size_t xmlSize,
                             BookMetadataCache* cache, bool sequentialManifest = false)
-      : cachePath(cachePath), baseContentPath(baseContentPath), remainingSize(xmlSize), cache(cache),
-        sequentialManifest_(sequentialManifest), indexDisabled_(sequentialManifest) {}
+      : cachePath(cachePath),
+        baseContentPath(baseContentPath),
+        remainingSize(xmlSize),
+        cache(cache),
+        sequentialManifest_(sequentialManifest),
+        indexDisabled_(sequentialManifest) {}
   ~ContentOpfParser() override;
 
   bool setup();

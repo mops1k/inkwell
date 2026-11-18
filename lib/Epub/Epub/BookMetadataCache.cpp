@@ -1,7 +1,7 @@
 #include "BookMetadataCache.h"
 
-#include <Logging.h>
 #include <Fb2.h>
+#include <Logging.h>
 #include <Serialization.h>
 #include <ZipFile.h>
 #include <esp_heap_caps.h>
@@ -12,7 +12,7 @@
 #include "FsHelpers.h"
 
 namespace {
-constexpr uint8_t BOOK_CACHE_VERSION = 12;
+constexpr uint8_t BOOK_CACHE_VERSION = 13;
 constexpr char bookBinFile[] = "/book.bin";
 constexpr char tmpSpineBinFile[] = "/spine.bin.tmp";
 constexpr char tmpTocBinFile[] = "/toc.bin.tmp";
@@ -180,7 +180,7 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
   const uint32_t metadataSize = metadata.title.size() + metadata.author.size() + metadata.language.size() +
                                 metadata.coverItemHref.size() + metadata.textReferenceHref.size() +
                                 metadata.series.size() + metadata.seriesIndex.size() + metadata.description.size() +
-                                sizeof(uint32_t) * 8;
+                                metadata.genre.size() + sizeof(uint32_t) * 9;
   const uint32_t lutSize = sizeof(uint32_t) * spineCount + sizeof(uint32_t) * tocCount;
   const uint32_t lutOffset = headerASize + metadataSize;
 
@@ -210,6 +210,7 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
   bookWriter.writeString(metadata.series);
   bookWriter.writeString(metadata.seriesIndex);
   bookWriter.writeString(metadata.description);
+  bookWriter.writeString(metadata.genre);
 
   // Scratch entries reused across all read loops below. Their internal
   // std::strings keep the capacity of the longest href/title encountered, so
@@ -579,13 +580,12 @@ bool BookMetadataCache::load() {
     LOG_ERR("BMC", "Incomplete or invalid book cache header");
     return false;
   };
-  const auto readExact = [this](auto& value) {
-    return bookFile.read(&value, sizeof(value)) == sizeof(value);
-  };
+  const auto readExact = [this](auto& value) { return bookFile.read(&value, sizeof(value)) == sizeof(value); };
   uint8_t version = 0;
   uint8_t tocReliableByte = 0;
-  if (!readExact(version) || version != BOOK_CACHE_VERSION || !readExact(lutOffset) ||
-      !readExact(spineCount) || !readExact(tocCount) || !readExact(tocReliableByte)) return reject();
+  if (!readExact(version) || version != BOOK_CACHE_VERSION || !readExact(lutOffset) || !readExact(spineCount) ||
+      !readExact(tocCount) || !readExact(tocReliableByte))
+    return reject();
   const size_t fileSize = bookFile.size();
   const size_t lutSize = (static_cast<size_t>(spineCount) + tocCount) * sizeof(uint32_t);
   if (lutOffset < bookFile.position() || lutOffset > fileSize || lutSize > fileSize - lutOffset) return reject();
@@ -595,17 +595,17 @@ bool BookMetadataCache::load() {
   // Interrupted writes must not be accepted as a warm cache by the home screen.
   const auto readMetadata = [&](std::string& value) {
     uint32_t length = 0;
-    if (bookFile.position() > lutOffset || lutOffset - bookFile.position() < sizeof(length) ||
-        !readExact(length) || length > serialization::MAX_STRING_LENGTH ||
-        length > lutOffset - bookFile.position()) return false;
+    if (bookFile.position() > lutOffset || lutOffset - bookFile.position() < sizeof(length) || !readExact(length) ||
+        length > serialization::MAX_STRING_LENGTH || length > lutOffset - bookFile.position())
+      return false;
     value.resize(length);
     return length == 0 || bookFile.read(value.data(), length) == length;
   };
-  if (!readMetadata(coreMetadata.title) || !readMetadata(coreMetadata.author) ||
-      !readMetadata(coreMetadata.language) || !readMetadata(coreMetadata.coverItemHref) ||
-      !readMetadata(coreMetadata.textReferenceHref) || !readMetadata(coreMetadata.series) ||
-      !readMetadata(coreMetadata.seriesIndex) || !readMetadata(coreMetadata.description) ||
-      bookFile.position() != lutOffset) return reject();
+  if (!readMetadata(coreMetadata.title) || !readMetadata(coreMetadata.author) || !readMetadata(coreMetadata.language) ||
+      !readMetadata(coreMetadata.coverItemHref) || !readMetadata(coreMetadata.textReferenceHref) ||
+      !readMetadata(coreMetadata.series) || !readMetadata(coreMetadata.seriesIndex) ||
+      !readMetadata(coreMetadata.description) || !readMetadata(coreMetadata.genre) || bookFile.position() != lutOffset)
+    return reject();
 
   loaded = true;
   LOG_DBG("BMC", "Loaded cache data: %d spine, %d TOC entries", spineCount, tocCount);

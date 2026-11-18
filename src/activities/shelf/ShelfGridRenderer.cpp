@@ -158,4 +158,33 @@ void drawShelfPage(GfxRenderer& renderer, const GridMetrics& metrics, const Page
   }
 }
 
+void drawOverlayList(GfxRenderer& renderer, const std::vector<std::string>& items, int selected) {
+  const int itemCount = static_cast<int>(items.size());
+  if (itemCount == 0) return;
+  const int lineHeight = renderer.getLineHeight(kCaptionFont) + 12;
+  // Long metadata values (author/series strings) must not push the box past the
+  // panel: the box grows with the label but never wider than the safe area.
+  const int maxWidth = renderer.getScreenWidth() - 40;
+  int boxWidth = 220;
+  for (const auto& item : items) {
+    boxWidth = std::max(boxWidth, renderer.getTextWidth(kCaptionFont, item.c_str()) + 40);
+  }
+  boxWidth = std::min(boxWidth, maxWidth);
+  const int boxHeight = itemCount * lineHeight + 20;
+  const int x = (renderer.getScreenWidth() - boxWidth) / 2;
+  const int y = (renderer.getScreenHeight() - boxHeight) / 2;
+
+  renderer.fillRect(x, y, boxWidth, boxHeight, false);
+  renderer.drawRect(x, y, boxWidth, boxHeight, 2, true);
+  for (int i = 0; i < itemCount; ++i) {
+    const int itemY = y + 10 + i * lineHeight;
+    if (i == selected) {
+      renderer.fillRect(x + 2, itemY - 4, boxWidth - 4, lineHeight, true);
+      renderer.drawText(kCaptionFont, x + 12, itemY, items[i].c_str(), false);
+    } else {
+      renderer.drawText(kCaptionFont, x + 12, itemY, items[i].c_str(), true);
+    }
+  }
+}
+
 }  // namespace shelfui

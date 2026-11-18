@@ -41,6 +41,7 @@ bool scanFb2File(const std::string& path, BookMeta& out) {
   out.title = result.metadata.title;
   out.author = result.metadata.author;
   out.language = result.metadata.language;
+  out.genre = result.metadata.genre;
   out.series = result.metadata.sequenceName;
   if (result.metadata.sequenceNumber != 0) out.seriesIndex = std::to_string(result.metadata.sequenceNumber);
   return !out.title.empty();

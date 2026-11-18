@@ -1,6 +1,8 @@
 #include "BookInfoActivity.h"
 
 #include <Bitmap.h>
+#include <BookFormat.h>
+#include <BookMetadata.h>
 #include <Epub.h>
 #include <Fb2.h>
 #include <FsHelpers.h>
@@ -16,6 +18,7 @@
 #include <ctime>
 #include <memory>
 
+#include "../ActivityManager.h"
 #include "BookCoverMenuActivity.h"
 #include "ReadingStats.h"
 #include "RecentBooksStore.h"
@@ -145,6 +148,17 @@ void BookInfoActivity::loadData() {
     series = epub.getSeries();
     seriesIndex = epub.getSeriesIndex();
     description = epub.getDescription();
+    genre = epub.getGenre();
+    // FB2 packages are read through the EPUB wrapper, whose generated OPF does
+    // not carry the source <genre>; the shelf's own FB2 scanner does, so fall
+    // back to it rather than showing an empty row for every FB2 card.
+    if (genre.empty()) {
+      const shelf::BookFormat format = shelf::detectBookFormat(filePath);
+      if (format == shelf::BookFormat::Fb2 || format == shelf::BookFormat::Fb2Zip) {
+        shelf::BookMeta scanned;
+        if (shelf::readBookMetadata(filePath, format, scanned)) genre = scanned.genre;
+      }
+    }
 
     // Use the shared cover path so a managed/legacy sidecar takes priority
     // over the embedded EPUB/FB2 cover here just as it does on Home.
@@ -232,12 +246,19 @@ void BookInfoActivity::openCoverPicker() {
 
 void BookInfoActivity::openCoverMenu() {
   startActivityForResult(
-      std::make_unique<BookCoverMenuActivity>(renderer, mappedInput, BookCoverUtils::hasCustomCover(filePath)),
+      std::make_unique<BookCoverMenuActivity>(renderer, mappedInput, BookCoverUtils::hasCustomCover(filePath), true),
       [this](const ActivityResult& result) {
         if (result.isCancelled) return;
         const auto* menu = std::get_if<MenuResult>(&result.data);
         if (!menu) return;
         switch (static_cast<BookCoverMenuActivity::Action>(menu->action)) {
+          case BookCoverMenuActivity::Action::Read: {
+            ReturnHint hint;
+            hint.target = returnToShelf_ ? ReturnTo::Shelf : ReturnTo::Home;
+            hint.selectName = filePath;
+            activityManager.replaceWithReader(filePath, std::move(hint));
+            return;
+          }
           case BookCoverMenuActivity::Action::Set:
             openCoverPicker();
             return;
@@ -416,6 +437,18 @@ void BookInfoActivity::render(RenderLock&&) {
     std::string seriesLine = series;
     if (!seriesIndex.empty()) seriesLine += " #" + seriesIndex;
     const auto lines = renderer.wrappedText(UI_10_FONT_ID, seriesLine.c_str(), metaWidth, 2);
+    for (const auto& line : lines) {
+      if (metaY + lineHeightSmall > contentBottom) break;
+      const std::string fitted = renderer.truncatedText(UI_10_FONT_ID, line.c_str(), metaWidth);
+      renderer.drawText(UI_10_FONT_ID, metaX, metaY, fitted.c_str());
+      metaY += lineHeightSmall;
+    }
+    metaY += 2;
+  }
+
+  if (!genre.empty()) {
+    const std::string genreLine = std::string(tr(STR_GENRE)) + ": " + genre;
+    const auto lines = renderer.wrappedText(UI_10_FONT_ID, genreLine.c_str(), metaWidth, 2);
     for (const auto& line : lines) {
       if (metaY + lineHeightSmall > contentBottom) break;
       const std::string fitted = renderer.truncatedText(UI_10_FONT_ID, line.c_str(), metaWidth);

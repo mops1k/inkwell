@@ -6,8 +6,13 @@
 #include "components/UITheme.h"
 
 BookCoverMenuActivity::BookCoverMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                             const bool hasCustomCover)
+                                             const bool hasCustomCover, const bool allowRead)
     : MenuListActivity("BookCoverMenu", renderer, mappedInput) {
+  // Reading belongs at the top of the card's action list: it is what the card
+  // is usually opened for. Home keeps the cover-only menu (allowRead=false).
+  if (allowRead) {
+    menuItems.push_back(SettingInfo::Action(StrId::STR_OPEN, SettingAction::None));
+  }
   menuItems.push_back(SettingInfo::Action(StrId::STR_SET_BOOK_COVER, SettingAction::None));
   if (hasCustomCover) {
     menuItems.push_back(SettingInfo::Action(StrId::STR_RESET_BOOK_COVER, SettingAction::None));
@@ -17,7 +22,9 @@ BookCoverMenuActivity::BookCoverMenuActivity(GfxRenderer& renderer, MappedInputM
 void BookCoverMenuActivity::onActionSelected(const int index) {
   if (index < 0 || index >= static_cast<int>(menuItems.size())) return;
   Action action;
-  if (menuItems[index].nameId == StrId::STR_SET_BOOK_COVER) {
+  if (menuItems[index].nameId == StrId::STR_OPEN) {
+    action = Action::Read;
+  } else if (menuItems[index].nameId == StrId::STR_SET_BOOK_COVER) {
     action = Action::Set;
   } else if (menuItems[index].nameId == StrId::STR_RESET_BOOK_COVER) {
     action = Action::Reset;

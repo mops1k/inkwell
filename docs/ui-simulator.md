@@ -12,6 +12,8 @@
 cmake -S tools/ui_sim -B build/ui_sim -DCMAKE_BUILD_TYPE=Release
 cmake --build build/ui_sim -j
 ./build/ui_sim/ui_sim --out /tmp/frames --scenario tools/ui_sim/scenarios/demo.json
+# полка с активным фильтром: подзаголовок «Автор: Лев Толстой», одна книга
+./build/ui_sim/ui_sim --out /tmp/frames_filter --scene shelf_filter --theme lyra
 ```
 
 Результат — `frame_000.png`, `frame_001.png`, … в указанном каталоге, уже в читательской

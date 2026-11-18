@@ -1,12 +1,14 @@
 #include <gtest/gtest.h>
+
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <vector>
-#include <cstring>
-#include <cstdlib>
+
+#include "Epub.h"
 #include "Epub/BookMetadataCache.h"
 #include "Epub/parsers/TocNavParser.h"
-#include "Epub.h"
 
 namespace {
 class BookMetadataCacheRecovery : public ::testing::Test {
@@ -24,10 +26,12 @@ class BookMetadataCacheRecovery : public ::testing::Test {
     out.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
   }
   static std::vector<unsigned char> valid() {
-    // Version 12, metadata boundary 42, no spine/TOC entries, eight empty strings.
-    std::vector<unsigned char> bytes(42, 0);
-    bytes[0] = 12;
-    bytes[1] = 42;
+    // Version 13, metadata boundary 46: 10-byte header (1 version + 4 lutOffset
+    // + 2 spineCount + 2 tocCount + 1 tocReliable) + nine empty strings.
+    // v13 added `genre` to the metadata block.
+    std::vector<unsigned char> bytes(46, 0);
+    bytes[0] = 13;
+    bytes[1] = 46;
     return bytes;
   }
 };
@@ -46,11 +50,17 @@ TEST_F(BookMetadataCacheRecovery, RejectsStringOutsideMetadataAndMissingLookupTa
   auto bytes = valid();
   bytes[10] = 255;  // First string length goes beyond the metadata region.
   write(bytes);
-  { BookMetadataCache cache(dir); EXPECT_FALSE(cache.load()); }
+  {
+    BookMetadataCache cache(dir);
+    EXPECT_FALSE(cache.load());
+  }
   bytes = valid();
   bytes[5] = 1;  // One spine entry requires a 4-byte lookup absent from this file.
   write(bytes);
-  { BookMetadataCache cache(dir); EXPECT_FALSE(cache.load()); }
+  {
+    BookMetadataCache cache(dir);
+    EXPECT_FALSE(cache.load());
+  }
 }
 // FB2 chapters are split into virtual spines; note sections also count as spines
 // but deliberately do not appear in the generated TOC. Conclave has 145 spines
@@ -117,10 +127,17 @@ TEST_F(BookMetadataCacheRecovery, SequentialTocHandlesBibleSizeRepeatedBackwardA
   ASSERT_TRUE(cache.endWrite());
   // Inspect the streamed temp records directly: no package/ZIP needed for this lookup test.
   std::ifstream in(dir + "/toc.bin.tmp", std::ios::binary);
-  auto string = [&]() { uint32_t size = 0; in.read(reinterpret_cast<char*>(&size), 4); in.seekg(size, std::ios::cur); };
+  auto string = [&]() {
+    uint32_t size = 0;
+    in.read(reinterpret_cast<char*>(&size), 4);
+    in.seekg(size, std::ios::cur);
+  };
   for (int i = 0; i < 3945; ++i) {
-    string(); string(); string();
-    uint8_t level; int16_t spine;
+    string();
+    string();
+    string();
+    uint8_t level;
+    int16_t spine;
     in.read(reinterpret_cast<char*>(&level), 1);
     in.read(reinterpret_cast<char*>(&spine), 2);
     ASSERT_TRUE(in.good());

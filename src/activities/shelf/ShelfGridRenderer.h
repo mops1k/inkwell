@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
 // Rendering of one shelf page, shared by the device screen (ShelfActivity) and
 // the host harness (tools/ui_sim). Nothing here loads data: the caller hands in
@@ -65,5 +66,10 @@ int pageCapacity(const GridMetrics& metrics);
 // Draws cells, selection frame and the page counter. Assumes the caller already
 // cleared the frame and drew the theme chrome; the caller also presents it.
 void drawShelfPage(GfxRenderer& renderer, const GridMetrics& metrics, const PageView& page);
+
+// Centered list overlay (book menu, filter categories, filter values). Shared
+// with the host harness so a screenshot of the filter flow is the real widget:
+// a filled row for the focus, one line per item, width capped to the panel.
+void drawOverlayList(GfxRenderer& renderer, const std::vector<std::string>& items, int selected);
 
 }  // namespace shelfui

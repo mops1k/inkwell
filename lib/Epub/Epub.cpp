@@ -176,6 +176,7 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, OpfCac
   bookMetadata.series = opfParser.series;
   bookMetadata.seriesIndex = opfParser.seriesIndex;
   bookMetadata.description = opfParser.description;
+  bookMetadata.genre = opfParser.genre;
 
   // Guide-based cover fallback: if no cover found via metadata/properties,
   // or if the manifest-declared cover path is invalid, try extracting the image
@@ -1015,6 +1016,14 @@ const std::string& Epub::getDescription() const {
     return blank;
   }
   return bookMetadataCache->coreMetadata.description;
+}
+
+const std::string& Epub::getGenre() const {
+  static std::string blank;
+  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
+    return blank;
+  }
+  return bookMetadataCache->coreMetadata.genre;
 }
 
 std::string Epub::getCoverBmpPath(bool cropped) const {

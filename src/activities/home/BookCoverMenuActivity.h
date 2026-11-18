@@ -4,9 +4,10 @@
 
 class BookCoverMenuActivity final : public MenuListActivity {
  public:
-  enum class Action { Set = 1, Reset = 2 };
+  enum class Action { Set = 1, Reset = 2, Read = 3 };
 
-  BookCoverMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool hasCustomCover);
+  BookCoverMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool hasCustomCover,
+                        bool allowRead = false);
   void render(RenderLock&&) override;
 
  private:

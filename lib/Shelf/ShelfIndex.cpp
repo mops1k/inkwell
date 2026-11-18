@@ -11,7 +11,11 @@ namespace shelf {
 
 namespace {
 
-constexpr int kIndexVersion = 1;
+// v2 added `genre` (first FB2 <genre> / EPUB dc:subject) for the shelf's genre
+// filter. A v1 file still loads: its books simply have no genre until the next
+// scan fills one in, so a firmware downgrade/upgrade never forces a full rescan.
+constexpr int kIndexVersion = 2;
+constexpr int kMinSupportedVersion = 1;
 // Leave room for the surrounding quotes and any escape expansion inside the
 // parser's token buffer; a value that still overflows is truncated on write,
 // never on read.
@@ -87,7 +91,7 @@ class IndexReader {
 
   bool finish() {
     if (error || parser.hasError()) return false;
-    if (!sawVersion || version != kIndexVersion) return false;
+    if (!sawVersion || version < kMinSupportedVersion || version > kIndexVersion) return false;
     if (!sawBooks || !rootClosed) return false;
     if (haveBook) return false;  // truncated mid-object
     target = std::move(parsed);
@@ -134,6 +138,8 @@ class IndexReader {
       book.meta.seriesIndex.assign(text);
     } else if (bookKey == "language") {
       book.meta.language.assign(text);
+    } else if (bookKey == "genre") {
+      book.meta.genre.assign(text);
     } else if (bookKey == "format") {
       book.format = bookFormatFromName(text);
     }
@@ -257,6 +263,9 @@ void serializeIndex(const ShelfIndex& index, std::string& out) {
     out.push_back(',');
     appendKey(out, "language");
     appendString(out, book.meta.language);
+    out.push_back(',');
+    appendKey(out, "genre");
+    appendString(out, book.meta.genre);
     out.push_back(',');
     appendKey(out, "metaOk");
     out += book.metaOk ? "true" : "false";

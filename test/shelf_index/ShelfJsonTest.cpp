@@ -33,6 +33,7 @@ TEST(ShelfJson, RoundTripsEveryField) {
   book.meta.series = "Война и мир";
   book.meta.seriesIndex = "2";
   book.meta.language = "ru";
+  book.meta.genre = "sf_history";
   book.metaOk = true;
   index.books.push_back(book);
 
@@ -58,6 +59,7 @@ TEST(ShelfJson, RoundTripsEveryField) {
   EXPECT_EQ(book.meta.series, got.meta.series);
   EXPECT_EQ(book.meta.seriesIndex, got.meta.seriesIndex);
   EXPECT_EQ(book.meta.language, got.meta.language);
+  EXPECT_EQ(book.meta.genre, got.meta.genre);
   EXPECT_EQ(book.metaOk, got.metaOk);
 }
 
@@ -103,12 +105,25 @@ TEST(ShelfJson, ForeignVersionIsRejected) {
   index.books.push_back(makeBook("/books/a.epub"));
   std::string payload;
   shelf::serializeIndex(index, payload);
-  const size_t at = payload.find("\"version\":1");
+  const size_t at = payload.find("\"version\":2");
   ASSERT_NE(std::string::npos, at);
-  payload.replace(at, std::strlen("\"version\":1"), "\"version\":2");
+  payload.replace(at, std::strlen("\"version\":2"), "\"version\":3");
 
   shelf::ShelfIndex parsed;
   EXPECT_FALSE(shelf::parseIndex(payload, parsed));
+}
+
+// v1 indexes (no `genre` key) must keep loading: a firmware update must never
+// force a full rescan, and an older index simply filters as "genre unknown".
+TEST(ShelfJson, VersionOneIndexStillLoads) {
+  const std::string v1 =
+      "{\"version\":1,\"books\":[{\"path\":\"/books/a.epub\",\"size\":10,\"date\":1,\"format\":\"epub\","
+      "\"title\":\"A\",\"author\":\"B\",\"series\":\"\",\"seriesIndex\":\"\",\"language\":\"ru\",\"metaOk\":true}]}\n";
+  shelf::ShelfIndex parsed;
+  ASSERT_TRUE(shelf::parseIndex(v1, parsed));
+  ASSERT_EQ(1u, parsed.books.size());
+  EXPECT_EQ(parsed.books.front().meta.title, "A");
+  EXPECT_TRUE(parsed.books.front().meta.genre.empty());
 }
 
 TEST(ShelfJson, GarbageIsRejected) {

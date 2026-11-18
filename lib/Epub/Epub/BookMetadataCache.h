@@ -22,6 +22,7 @@ class BookMetadataCache {
     std::string series;
     std::string seriesIndex;
     std::string description;
+    std::string genre;  // first dc:subject (EPUB) — shelf genre filter
   };
 
   struct SpineEntry {

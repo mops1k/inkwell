@@ -28,14 +28,39 @@ class ShelfScene : public Scene {
   // generated yet" state.
   void useCovers(const std::vector<std::string>& covers);
 
+  // Pre-applies the "Автор: Лев Толстой" filter for the shelf_filter scene, so
+  // the frame shows the filtered state without scripting key presses.
+  void applyDemoFilter();
+
  private:
-  // Grid area derived from the current theme's content rect, and the metrics
-  // that follow from it. Both depend on the renderer (screen/orientation) and on
-  // the selected theme, so they are computed per draw instead of cached.
+  // One fixture book keeps the shelf cell and the metadata the filter menu
+  // needs; the device reads the same fields from ShelfIndex.
+  struct Book {
+    shelfui::CellView cell;
+    std::string series;
+    std::string genre;
+  };
+
+  // Mirrors ShelfActivity's overlay state machine: the shelf, the filter
+  // category menu, or the list of values of the selected category.
+  enum class Overlay { None, Categories, Values };
+
   shelfui::GridMetrics gridMetrics(const GfxRenderer& renderer) const;
   int pageStart(const shelfui::GridMetrics& metrics) const;
+  // Indices of books_ the current filter leaves visible, in shelf order.
+  std::vector<size_t> visible() const;
+  std::vector<std::string> overlayItems() const;
+  void openCategories();
+  void openValues();
+  void activateItem();
 
-  std::vector<shelfui::CellView> books_;
+  std::vector<Book> books_;
+  std::vector<std::string> values_;
+  std::string filterField_;  // "Автор"/"Серия"/"Жанр" while a value list is open
+  std::string filterValue_;  // applied filter value, empty = whole library
+  Overlay overlay_ = Overlay::None;
+  int menuIndex_ = 0;
+  int categoryIndex_ = 0;
   int selected_ = 0;
 };
 

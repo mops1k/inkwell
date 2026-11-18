@@ -1,0 +1,37 @@
+#pragma once
+
+#include <string>
+
+#include "LibraryQuery.h"
+
+namespace shelf {
+
+// What the shelf screen remembers between boots: the active filter and the
+// sort order. Kept apart from books.json — a rescan rewrites the index, while
+// the user's library view must survive it.
+struct LibraryState {
+  LibraryFilter filter;
+  SortKey sort = SortKey::Title;
+};
+
+// Same crash-safe pattern as ShelfIndexStore (AGENTS.md: ".tmp + rename,
+// при повреждении — восстановление, а не падение"). A missing or broken
+// state file is not an error: the shelf simply opens with no filter.
+class ShelfStateStore {
+ public:
+  explicit ShelfStateStore(std::string dir = "/.crosspoint/shelf");
+
+  bool load(LibraryState& out);
+  bool save(const LibraryState& state);
+
+ private:
+  std::string file;
+  std::string tmp;
+  std::string bak;
+};
+
+// JSON codec, exposed for host tests (the store itself only does file I/O).
+void serializeLibraryState(const LibraryState& state, std::string& out);
+bool parseLibraryState(std::string_view json, LibraryState& out);
+
+}  // namespace shelf

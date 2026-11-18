@@ -19,11 +19,15 @@ class BookInfoActivity final : public Activity {
   std::string author;
   std::string series;
   std::string seriesIndex;
+  std::string genre;  // first FB2 <genre> / EPUB dc:subject, may stay empty
   std::string description;
   std::string coverBmpPath;
   std::string loadError;
   bool loadSucceeded = false;
   size_t fileSizeBytes = 0;
+  // Whether "Read" from this card returns to the shelf (it was opened there)
+  // or to Home (opened from the home carousel).
+  bool returnToShelf_ = false;
 
   // Reading stats snapshot, populated in loadData() when this book has history.
   bool hasReadingStats = false;
@@ -60,8 +64,9 @@ class BookInfoActivity final : public Activity {
   void refreshAfterCoverChange();
 
  public:
-  explicit BookInfoActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string filePath)
-      : Activity("BookInfo", renderer, mappedInput), filePath(std::move(filePath)) {}
+  explicit BookInfoActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string filePath,
+                            bool returnToShelf = false)
+      : Activity("BookInfo", renderer, mappedInput), filePath(std::move(filePath)), returnToShelf_(returnToShelf) {}
 
   void onEnter() override;
   void loop() override;

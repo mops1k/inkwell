@@ -31,6 +31,7 @@ struct BookMeta {
   std::string series;
   std::string seriesIndex;
   std::string language;
+  std::string genre;  // first genre/subject; drives the shelf's genre filter
 };
 
 // One indexed file. `path` is the absolute SD path and stays the book identity
