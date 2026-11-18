@@ -145,7 +145,6 @@ class ActivityManager {
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
   void goToWeather();
-  void goToGames();
   void goHome(std::string focusBookPath = {}, int focusSelectorIndex = -1);
   HomeSleepState captureHomeForQuickSleep() const;
   void resumeHomeFromQuickSleep(const HomeSleepState& state);

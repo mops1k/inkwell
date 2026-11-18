@@ -89,7 +89,6 @@ enum UIIcon {
   Wifi,
   Hotspot,
   Weather,
-  Games,
   Dropbox
 };
 

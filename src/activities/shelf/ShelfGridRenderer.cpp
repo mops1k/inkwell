@@ -69,20 +69,29 @@ void drawProgress(GfxRenderer& renderer, int x, int y, int width, int progressPe
   const int barHeight = lineHeight + 6;
   const int top = y - barHeight;
 
-  // Track outline plus filled portion, with the percentage centred inside the
-  // bar. The number flips to white where it sits on the black fill, so it stays
-  // readable on both sides of the boundary.
+  // Track, filled portion and a 1px white separator on top so the bar reads as
+  // its own element rather than as part of the artwork.
   renderer.drawRect(x, top, width, barHeight, true);
   const int filled = width * clamped / 100;
   if (filled > 0) renderer.fillRect(x, top, filled, barHeight);
+  renderer.drawLine(x, top, x + width - 1, top, false);
 
   char label[8];
   std::snprintf(label, sizeof(label), "%d%%", clamped);
   const int textWidth = renderer.getTextWidth(kCaptionFont, label);
-  const int textX = x + (width - textWidth) / 2;
   const int textY = top + (barHeight - lineHeight) / 2;
-  const bool overFill = textX + textWidth / 2 < x + filled;
-  renderer.drawText(kCaptionFont, textX, textY, label, !overFill);
+
+  // Per-glyph inversion: a digit whose centre lies on the black fill is drawn
+  // white, the rest stay black. Digits and '%' are ASCII, so walking bytes is
+  // enough and each character is measured on its own.
+  int penX = x + (width - textWidth) / 2;
+  for (const char* glyph = label; *glyph != '\0'; ++glyph) {
+    char text[2] = {*glyph, '\0'};
+    const int glyphWidth = renderer.getTextWidth(kCaptionFont, text);
+    const bool overFill = penX + glyphWidth / 2 < x + filled;
+    renderer.drawText(kCaptionFont, penX, textY, text, !overFill);
+    penX += glyphWidth;
+  }
 }
 
 }  // namespace

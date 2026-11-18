@@ -32,7 +32,6 @@ enum class SettingAction {
   DetectTimezone,
   SyncTime,
   Weather,
-  Games,
   ReadingStats,
   SleepTimeoutPicker,
   RefreshFrequencyPicker,

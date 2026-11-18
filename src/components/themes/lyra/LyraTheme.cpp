@@ -23,8 +23,6 @@
 #include "components/icons/file24.h"
 #include "components/icons/folder.h"
 #include "components/icons/folder24.h"
-#include "components/icons/games24.h"
-#include "components/icons/games32.h"
 #include "components/icons/hotspot.h"
 #include "components/icons/image24.h"
 #include "components/icons/library.h"
@@ -108,8 +106,6 @@ const uint8_t* LyraTheme::iconForName(UIIcon icon, int size) {
         return File24Icon;
       case UIIcon::Weather:
         return Weather24Icon;
-      case UIIcon::Games:
-        return Games24Icon;
       case UIIcon::Dropbox:
         return Dropbox24Icon;
       default:
@@ -135,8 +131,6 @@ const uint8_t* LyraTheme::iconForName(UIIcon icon, int size) {
         return HotspotIcon;
       case UIIcon::Weather:
         return Weather32Icon;
-      case UIIcon::Games:
-        return Games32Icon;
       case UIIcon::Dropbox:
         return Dropbox32Icon;
       default:

@@ -190,10 +190,6 @@ void SettingsActivity::onEnter() {
   addToMoved(systemSettings, lastSystemSub,
              std::move(SettingInfo::Action(StrId::STR_WEATHER_SETTINGS, SettingAction::Weather)
                            .withSubcategory(StrId::STR_MENU_SYS_TOOLS)));
-  addToMoved(
-      systemSettings, lastSystemSub,
-      std::move(
-          SettingInfo::Action(StrId::STR_GAMES, SettingAction::Games).withSubcategory(StrId::STR_MENU_SYS_TOOLS)));
   addToMoved(systemSettings, lastSystemSub,
              std::move(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache)
                            .withSubcategory(StrId::STR_MENU_SYS_SYSTEM)));

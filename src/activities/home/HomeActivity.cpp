@@ -147,7 +147,6 @@ void HomeActivity::rebuildMenuEntries() {
   if (SETTINGS.useWeather) {
     menuEntries.push_back({MenuAction::Weather, StrId::STR_WEATHER, Weather});
   }
-  menuEntries.push_back({MenuAction::Games, StrId::STR_GAMES, Games});
   menuEntries.push_back({MenuAction::Settings, StrId::STR_SETTINGS_TITLE, Settings});
   menuEntriesDirty = false;
 }
@@ -1093,9 +1092,6 @@ void HomeActivity::dispatchMenuAction(MenuAction action) {
       break;
     case MenuAction::Weather:
       activityManager.goToWeather();
-      break;
-    case MenuAction::Games:
-      activityManager.goToGames();
       break;
     case MenuAction::Settings:
       activityManager.goToSettings();

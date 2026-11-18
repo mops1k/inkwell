@@ -23,7 +23,6 @@
 #include "SystemInformationActivity.h"
 #include "TextSettingsActivity.h"
 #include "activities/browser/DropboxBrowserActivity.h"
-#include "activities/games/GamesMenuActivity.h"
 #include "activities/network/SerialTransferActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/weather/WeatherSettingsActivity.h"
@@ -67,8 +66,6 @@ std::unique_ptr<Activity> createActivityForAction(SettingAction action, GfxRende
       return std::make_unique<LanguageSelectActivity>(renderer, mappedInput);
     case SettingAction::Weather:
       return std::make_unique<WeatherSettingsActivity>(renderer, mappedInput);
-    case SettingAction::Games:
-      return std::make_unique<GamesMenuActivity>(renderer, mappedInput);
     case SettingAction::SystemInfo:
       return std::make_unique<SystemInformationActivity>(renderer, mappedInput);
     case SettingAction::SyncTime:
