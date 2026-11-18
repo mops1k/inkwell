@@ -1,0 +1,460 @@
+--- hw/ssi/esp32c3_gpspi.c
++++ hw/ssi/esp32c3_gpspi.c
+@@ -0,0 +1,333 @@
++/*
++ * ESP32-C3 general-purpose SPI controller (GPSPI2 / FSPI), see the header for
++ * the rationale and the register map.
++ *
++ * Copyright (c) 2026 xteink-shelf fork
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 or
++ * (at your option) any later version.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/log.h"
++#include "qemu/module.h"
++#include "hw/sysbus.h"
++#include "hw/irq.h"
++#include "hw/qdev-properties.h"
++#include "hw/ssi/ssi.h"
++#include "hw/ssi/esp32c3_gpspi.h"
++#include "qemu/error-report.h"
++
++#define GPSPI_DEBUG 0
++
++static uint64_t esp32c3_gpspi_read(void *opaque, hwaddr addr, unsigned int size)
++{
++    ESP32C3GpspiState *s = ESP32C3_GPSPI(opaque);
++    uint64_t r = 0;
++
++    switch (addr) {
++    case GPSPI_CMD:
++        r = 0;              /* USR/UPDATE are self-clearing */
++        break;
++    case GPSPI_ADDR:
++        r = s->addr;
++        break;
++    case GPSPI_CTRL:
++        r = s->ctrl;
++        break;
++    case GPSPI_CLOCK:
++        r = s->clock;
++        break;
++    case GPSPI_USER:
++        r = s->user;
++        break;
++    case GPSPI_USER1:
++        r = s->user1;
++        break;
++    case GPSPI_USER2:
++        r = s->user2;
++        break;
++    case GPSPI_MS_DLEN:
++        r = s->ms_dlen;
++        break;
++    case GPSPI_MISC:
++        r = s->misc;
++        break;
++    case GPSPI_DIN_MODE:
++        r = s->din_mode;
++        break;
++    case GPSPI_DIN_NUM:
++        r = s->din_num;
++        break;
++    case GPSPI_DOUT_MODE:
++        r = s->dout_mode;
++        break;
++    case GPSPI_DMA_CONF:
++        r = s->dma_conf;
++        break;
++    case GPSPI_DMA_INT_ENA:
++        r = s->dma_int_ena;
++        break;
++    case GPSPI_DMA_INT_RAW:
++        r = s->dma_int_raw;
++        break;
++    case GPSPI_DMA_INT_ST:
++        r = s->dma_int_raw & s->dma_int_ena;
++        break;
++    case GPSPI_W0 ... GPSPI_W15:
++        r = s->data_buf[(addr - GPSPI_W0) / sizeof(uint32_t)];
++        break;
++    case GPSPI_SLAVE:
++        r = s->slave;
++        break;
++    case GPSPI_SLAVE1:
++        r = s->slave1;
++        break;
++    case GPSPI_CLK_GATE:
++        r = s->clk_gate;
++        break;
++    case GPSPI_DATE:
++        r = 0x02200100;     /* "GPSPI" date register; any non-zero value */
++        break;
++    default:
++#if GPSPI_DEBUG
++        warn_report("[GPSPI2] Unsupported read 0x%lx", (unsigned long)addr);
++#endif
++        break;
++    }
++
++#if GPSPI_DEBUG
++    info_report("[GPSPI2] R 0x%lx = 0x%lx", (unsigned long)addr,
++                (unsigned long)r);
++#endif
++    return r;
++}
++
++/* Send @bits bits of @value MSB first, one SSI byte at a time. */
++static void gpspi_send_value(ESP32C3GpspiState *s, uint32_t value, int bits)
++{
++    int nbytes = (bits + 7) / 8;
++    int i;
++
++    for (i = nbytes - 1; i >= 0; i--) {
++        ssi_transfer(s->spi, (value >> (i * 8)) & 0xff);
++        s->bytes++;
++    }
++}
++
++static void esp32c3_gpspi_do_transaction(ESP32C3GpspiState *s)
++{
++    uint8_t *fifo = (uint8_t *)s->data_buf;
++    int cmd_bits = 0, addr_bits = 0, dummy_bits = 0;
++    int mosi_bits = 0, miso_bits = 0;
++    int mosi_bytes, miso_bytes, data_bytes, dummy_bytes, i;
++
++    if (s->user & GPSPI_USER_USR_COMMAND) {
++        cmd_bits = ((s->user2 >> 28) & 0xf) + 1;
++    }
++    if (s->user & GPSPI_USER_USR_ADDR) {
++        addr_bits = ((s->user1 >> 27) & 0x1f) + 1;
++    }
++    if (s->user & GPSPI_USER_USR_DUMMY) {
++        dummy_bits = (s->user1 & 0xff) + 1;
++    }
++    if (s->user & GPSPI_USER_USR_MOSI) {
++        mosi_bits = (s->ms_dlen & 0x3ff) + 1;
++    }
++    if (s->user & GPSPI_USER_USR_MISO) {
++        miso_bits = ((s->ms_dlen >> 10) & 0x3ff) + 1;
++    }
++
++    if (cmd_bits) {
++        gpspi_send_value(s, s->user2 & 0xffff, cmd_bits);
++    }
++    if (addr_bits) {
++        gpspi_send_value(s, s->addr, addr_bits);
++    }
++    dummy_bytes = dummy_bits / 8;
++    for (i = 0; i < dummy_bytes; i++) {
++        ssi_transfer(s->spi, 0);
++        s->bytes++;
++    }
++
++    mosi_bytes = (mosi_bits + 7) / 8;
++    miso_bytes = (miso_bits + 7) / 8;
++    data_bytes = MAX(mosi_bytes, miso_bytes);
++    if (data_bytes > GPSPI_FIFO_WORDS * 4) {
++        /* The CPU-driven path only ever fills the 64-byte FIFO. */
++        data_bytes = GPSPI_FIFO_WORDS * 4;
++    }
++
++    for (i = 0; i < data_bytes; i++) {
++        uint8_t tx = (i < mosi_bytes) ? fifo[i] : 0xff;
++        uint32_t rx = ssi_transfer(s->spi, tx);
++
++        if (i < miso_bytes) {
++            fifo[i] = rx & 0xff;
++        }
++        s->bytes++;
++    }
++
++    s->transactions++;
++    /* spi_ll_usr_is_done() polls this bit; nothing in the polling path clears
++     * it, so leave it set (the driver only waits for it to become non-zero). */
++    s->dma_int_raw |= GPSPI_TRANS_DONE_INT;
++
++#if GPSPI_DEBUG
++    info_report("[GPSPI2] txn #%llu cmd=%d addr=%d dummy=%d mosi=%d miso=%d",
++                (unsigned long long)s->transactions, cmd_bits, addr_bits,
++                dummy_bits, mosi_bits, miso_bits);
++#endif
++}
++
++static void esp32c3_gpspi_write(void *opaque, hwaddr addr, uint64_t value,
++                                unsigned int size)
++{
++    ESP32C3GpspiState *s = ESP32C3_GPSPI(opaque);
++    uint32_t wvalue = (uint32_t)value;
++
++#if GPSPI_DEBUG
++    info_report("[GPSPI2] W 0x%lx = 0x%lx", (unsigned long)addr,
++                (unsigned long)wvalue);
++#endif
++
++    switch (addr) {
++    case GPSPI_CMD:
++        /* SPI_UPDATE (bit 23) only copies registers into the internal shadow
++         * set and clears itself; SPI_USR (bit 24) starts the transfer. */
++        if (wvalue & GPSPI_CMD_USR) {
++            esp32c3_gpspi_do_transaction(s);
++        }
++        s->cmd = 0;
++        break;
++    case GPSPI_ADDR:
++        s->addr = wvalue;
++        break;
++    case GPSPI_CTRL:
++        s->ctrl = wvalue;
++        break;
++    case GPSPI_CLOCK:
++        s->clock = wvalue;
++        break;
++    case GPSPI_USER:
++        s->user = wvalue;
++        break;
++    case GPSPI_USER1:
++        s->user1 = wvalue;
++        break;
++    case GPSPI_USER2:
++        s->user2 = wvalue;
++        break;
++    case GPSPI_MS_DLEN:
++        s->ms_dlen = wvalue;
++        break;
++    case GPSPI_MISC:
++        s->misc = wvalue;
++        break;
++    case GPSPI_DIN_MODE:
++        s->din_mode = wvalue;
++        break;
++    case GPSPI_DIN_NUM:
++        s->din_num = wvalue;
++        break;
++    case GPSPI_DOUT_MODE:
++        s->dout_mode = wvalue;
++        break;
++    case GPSPI_DMA_CONF:
++        s->dma_conf = wvalue;
++        break;
++    case GPSPI_DMA_INT_ENA:
++        s->dma_int_ena = wvalue;
++        break;
++    case GPSPI_DMA_INT_CLR:
++        s->dma_int_raw &= ~wvalue;
++        break;
++    case GPSPI_W0 ... GPSPI_W15:
++        s->data_buf[(addr - GPSPI_W0) / sizeof(uint32_t)] = wvalue;
++        break;
++    case GPSPI_SLAVE:
++        s->slave = wvalue;
++        break;
++    case GPSPI_SLAVE1:
++        s->slave1 = wvalue;
++        break;
++    case GPSPI_CLK_GATE:
++        s->clk_gate = wvalue;
++        break;
++    default:
++#if GPSPI_DEBUG
++        warn_report("[GPSPI2] Unsupported write 0x%lx = 0x%lx",
++                    (unsigned long)addr, (unsigned long)wvalue);
++#endif
++        break;
++    }
++}
++
++static const MemoryRegionOps esp32c3_gpspi_ops = {
++    .read = esp32c3_gpspi_read,
++    .write = esp32c3_gpspi_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++};
++
++static void esp32c3_gpspi_reset_hold(Object *obj, ResetType type)
++{
++    ESP32C3GpspiState *s = ESP32C3_GPSPI(obj);
++
++    s->cmd = 0;
++    s->addr = 0;
++    s->ctrl = 0;
++    s->clock = 0;
++    s->user = 0;
++    s->user1 = 0;
++    s->user2 = 0;
++    s->ms_dlen = 0;
++    s->misc = 0;
++    s->din_mode = 0;
++    s->din_num = 0;
++    s->dout_mode = 0;
++    s->dma_conf = 0;
++    s->dma_int_ena = 0;
++    s->dma_int_raw = 0;
++    s->slave = 0;
++    s->slave1 = 0;
++    s->clk_gate = 0;
++    memset(s->data_buf, 0, sizeof(s->data_buf));
++}
++
++static void esp32c3_gpspi_init(Object *obj)
++{
++    ESP32C3GpspiState *s = ESP32C3_GPSPI(obj);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
++
++    memory_region_init_io(&s->iomem, obj, &esp32c3_gpspi_ops, s,
++                          TYPE_ESP32C3_GPSPI, GPSPI_IO_SIZE);
++    sysbus_init_mmio(sbd, &s->iomem);
++
++    s->spi = ssi_create_bus(DEVICE(s), "spi");
++    esp32c3_gpspi_reset_hold(obj, RESET_TYPE_COLD);
++}
++
++static void esp32c3_gpspi_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    ResettableClass *rc = RESETTABLE_CLASS(klass);
++
++    rc->phases.hold = esp32c3_gpspi_reset_hold;
++    dc->desc = "ESP32-C3 general-purpose SPI (GPSPI2)";
++}
++
++static const TypeInfo esp32c3_gpspi_info = {
++    .name = TYPE_ESP32C3_GPSPI,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(ESP32C3GpspiState),
++    .instance_init = esp32c3_gpspi_init,
++    .class_init = esp32c3_gpspi_class_init,
++};
++
++static void esp32c3_gpspi_register_types(void)
++{
++    type_register_static(&esp32c3_gpspi_info);
++}
++
++type_init(esp32c3_gpspi_register_types)
+--- include/hw/ssi/esp32c3_gpspi.h
++++ include/hw/ssi/esp32c3_gpspi.h
+@@ -0,0 +1,110 @@
++/*
++ * ESP32-C3 general-purpose SPI controller (GPSPI2, also called FSPI).
++ *
++ * The C3 has three SPI controllers with two different register layouts:
++ * SPI0/SPI1 are the "MEM" (flash/cache) controllers, modelled by
++ * hw/ssi/esp32c3_spi.c, while SPI2 is a general-purpose master whose register
++ * block follows the classic GPSPI layout (SPI_CMD/USER/USER1/USER2/MS_DLEN and
++ * the SPI_W0..W15 FIFO). The C3 machine previously had no SPI2 at all, so the
++ * first register access from the driver was lost and the firmware spun in
++ * "while (cmd.usr)".
++ *
++ * This model implements the CPU-driven (non-DMA) path, which is what the
++ * Arduino/ESP-IDF register-level driver (esp32-hal-spi.c) uses: software fills
++ * the FIFO with up to 64 bytes, programs the command/address/dummy/data bit
++ * lengths and sets SPI_CMD.USR. The transaction is then executed immediately
++ * against the SSI bus and USR is cleared, so the driver's poll loop terminates.
++ *
++ * Copyright (c) 2026 xteink-shelf fork
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 or
++ * (at your option) any later version.
++ */
++
++#pragma once
++
++#include "hw/sysbus.h"
++#include "hw/ssi/ssi.h"
++#include "hw/hw.h"
++
++#define TYPE_ESP32C3_GPSPI "ssi.esp32c3.gpspi"
++#define ESP32C3_GPSPI(obj) \
++    OBJECT_CHECK(ESP32C3GpspiState, (obj), TYPE_ESP32C3_GPSPI)
++
++/* Register offsets of the ESP32-C3 GPSPI block (DR_REG_SPI2_BASE = 0x60024000).
++ * Source: ESP-IDF soc/esp32c3/register/soc/spi_reg.h */
++#define GPSPI_CMD          0x00
++#define GPSPI_ADDR         0x04
++#define GPSPI_CTRL         0x08
++#define GPSPI_CLOCK        0x0c
++#define GPSPI_USER         0x10
++#define GPSPI_USER1        0x14
++#define GPSPI_USER2        0x18
++#define GPSPI_MS_DLEN      0x1c
++#define GPSPI_MISC         0x20
++#define GPSPI_DIN_MODE     0x24
++#define GPSPI_DIN_NUM      0x28
++#define GPSPI_DOUT_MODE    0x2c
++#define GPSPI_DMA_CONF     0x30
++#define GPSPI_DMA_INT_ENA  0x34
++#define GPSPI_DMA_INT_CLR  0x38
++#define GPSPI_DMA_INT_RAW  0x3c
++#define GPSPI_DMA_INT_ST   0x40
++#define GPSPI_W0           0x98
++#define GPSPI_W15          0xd4
++#define GPSPI_SLAVE        0xe0
++#define GPSPI_SLAVE1       0xe4
++#define GPSPI_CLK_GATE     0xe8
++#define GPSPI_DATE         0xf0
++
++#define GPSPI_IO_SIZE      0x1000
++#define GPSPI_FIFO_WORDS   16
++
++/* SPI_CMD_REG bits */
++#define GPSPI_CMD_UPDATE   (1u << 23)
++#define GPSPI_CMD_USR      (1u << 24)
++
++/* SPI_USER_REG bits */
++#define GPSPI_USER_CS_HOLD      (1u << 6)
++#define GPSPI_USER_CS_SETUP     (1u << 7)
++#define GPSPI_USER_CK_OUT_EDGE  (1u << 9)
++#define GPSPI_USER_USR_MOSI     (1u << 27)
++#define GPSPI_USER_USR_MISO     (1u << 28)
++#define GPSPI_USER_USR_DUMMY    (1u << 29)
++#define GPSPI_USER_USR_ADDR     (1u << 30)
++#define GPSPI_USER_USR_COMMAND  (1u << 31)
++
++/* SPI_DMA_INT_RAW_REG: trans_done is what spi_ll_usr_is_done() polls */
++#define GPSPI_TRANS_DONE_INT    (1u << 12)
++
++typedef struct ESP32C3GpspiState {
++    SysBusDevice parent_obj;
++
++    MemoryRegion iomem;
++    SSIBus *spi;
++
++    uint32_t cmd;
++    uint32_t addr;
++    uint32_t ctrl;
++    uint32_t clock;
++    uint32_t user;
++    uint32_t user1;
++    uint32_t user2;
++    uint32_t ms_dlen;
++    uint32_t misc;
++    uint32_t din_mode;
++    uint32_t din_num;
++    uint32_t dout_mode;
++    uint32_t dma_conf;
++    uint32_t dma_int_ena;
++    uint32_t dma_int_raw;
++    uint32_t slave;
++    uint32_t slave1;
++    uint32_t clk_gate;
++    uint32_t data_buf[GPSPI_FIFO_WORDS];
++
++    /* Statistics, useful when bringing a new guest driver up. */
++    uint64_t transactions;
++    uint64_t bytes;
++} ESP32C3GpspiState;
+--- hw/ssi/meson.build
++++ hw/ssi/meson.build
+@@ -11,7 +11,7 @@
+ system_ss.add(when: 'CONFIG_XLNX_VERSAL', if_true: files('xlnx-versal-ospi.c'))
+ system_ss.add(when: 'CONFIG_IMX', if_true: files('imx_spi.c'))
+ system_ss.add(when: 'CONFIG_XTENSA_ESP32', if_true: files('esp32_spi.c'))
+-system_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files('esp32c3_spi.c'))
++system_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files('esp32c3_spi.c', 'esp32c3_gpspi.c'))
+ system_ss.add(when: 'CONFIG_RISCV_ESP32C5', if_true: files('esp32c3_spi.c', 'esp32c5_spi.c'))
+ system_ss.add(when: 'CONFIG_RISCV_ESP32C61', if_true: files('esp32c3_spi.c', 'esp32c61_spi.c'))
+ system_ss.add(when: 'CONFIG_RISCV_ESP32H4', if_true: files('esp32c3_spi.c', 'esp32h4_spi.c'))

@@ -1,0 +1,309 @@
+--- hw/i2c/esp32_i2c.c
++++ hw/i2c/esp32_i2c.c
+@@ -180,6 +180,7 @@
+         char opcode = FIELD_EX32(cmd, I2C_CMD, OPCODE);
+         switch (opcode) {
+             case I2C_OPCODE_RSTART:
++            case I2C_OPCODE_RSTART_C3:
+                 i2c_end_transfer(s->bus);
+                 s->trans_ongoing = false;
+                 break;
+--- include/hw/i2c/esp32_i2c.h
++++ include/hw/i2c/esp32_i2c.h
+@@ -97,13 +97,20 @@
+     FIELD(I2C_CMD, DONE, 31, 1);
+ /* 15 more command registers omitted */
+ 
+-/* I2C_CMD.OPCODE values */
++/* I2C_CMD.OPCODE values.
++ *
++ * The original ESP32 (Xtensa) encodes a repeated START as 0. The ESP32-C3 and
++ * the other RISC-V parts encode it as 6, while WRITE/READ/STOP/END keep their
++ * values. The model is shared by both families, so both encodings must be
++ * accepted: treating 6 as an unknown opcode silently breaks every
++ * write-then-read transaction on the C3 (the gauge, RTC and touch probes). */
+ typedef enum {
+-    I2C_OPCODE_RSTART = 0,
+-    I2C_OPCODE_WRITE  = 1,
+-    I2C_OPCODE_READ   = 2,
+-    I2C_OPCODE_STOP   = 3,
+-    I2C_OPCODE_END    = 4,
++    I2C_OPCODE_RSTART    = 0,
++    I2C_OPCODE_WRITE     = 1,
++    I2C_OPCODE_READ      = 2,
++    I2C_OPCODE_STOP      = 3,
++    I2C_OPCODE_END       = 4,
++    I2C_OPCODE_RSTART_C3 = 6,
+ } i2c_opcode_t;
+ 
+ #endif /* ESP32_I2C_H */
+--- hw/i2c/xteink_x3_i2c.c
++++ hw/i2c/xteink_x3_i2c.c
+@@ -0,0 +1,214 @@
++/*
++ * Xteink X3 I2C peripherals: BQ27220 fuel gauge, DS3231 RTC and QMI8658 IMU.
++ *
++ * The X3 firmware decides which board it is running on by fingerprinting this
++ * bus: it probes the gauge at 0x55, the RTC at 0x68 and the IMU at 0x6B, and
++ * only runs as an X3 (UC8253 panel) when at least two of the three answer with
++ * plausible values in two consecutive passes. With nothing on the bus the probe
++ * scores zero, the firmware picks the X4 profile and drives the wrong panel
++ * controller — which is exactly what used to happen in QEMU.
++ *
++ * The models are deliberately small: they answer the registers the probe and
++ * the power/clock code read, with fixed values, so runs are reproducible.
++ *
++ * Copyright (c) 2026 xteink-shelf fork
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 or
++ * (at your option) any later version.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/module.h"
++#include "hw/i2c/i2c.h"
++#include "hw/qdev-properties.h"
++#include "hw/i2c/xteink_x3_i2c.h"
++#include "qemu/error-report.h"
++
++/* ------------------------------------------------------------------------- */
++/* BQ27220 fuel gauge: 16-bit little-endian registers, command = 1 byte.      */
++
++#define BQ27220_VOLTAGE_MV      4020    /* 0x08 Voltage()             */
++#define BQ27220_CURRENT_MA      0       /* 0x0C Current(), signed     */
++#define BQ27220_SOC_PERCENT     87      /* 0x2C StateOfCharge()       */
++#define BQ27220_TEMP_0K1        2981    /* 0x06 Temperature(), 0.1 K  */
++#define BQ27220_REMAINING_MAH   5400    /* 0x10 RemainingCapacity()   */
++#define BQ27220_FULL_MAH        6200    /* 0x12 FullChargeCapacity()  */
++#define BQ27220_DESIGN_MAH      6500    /* 0x3C DesignCapacity()      */
++
++static uint16_t bq27220_register(uint8_t reg)
++{
++    switch (reg) {
++    case 0x06:
++        return BQ27220_TEMP_0K1;
++    case 0x08:
++        return BQ27220_VOLTAGE_MV;
++    case 0x0c:
++        return (uint16_t)BQ27220_CURRENT_MA;
++    case 0x10:
++        return BQ27220_REMAINING_MAH;
++    case 0x12:
++        return BQ27220_FULL_MAH;
++    case 0x2c:
++        return BQ27220_SOC_PERCENT;
++    case 0x3c:
++        return BQ27220_DESIGN_MAH;
++    default:
++        return 0;
++    }
++}
++
++/* ------------------------------------------------------------------------- */
++/* DS3231 RTC: BCD time registers starting at 0x00, sequential reads advance. */
++
++static uint8_t ds3231_register(uint8_t reg)
++{
++    switch (reg) {
++    case 0x00:      /* seconds */
++        return 0x00;
++    case 0x01:      /* minutes */
++        return 0x00;
++    case 0x02:      /* hours, 24 h mode */
++        return 0x12;
++    case 0x03:      /* day of week */
++        return 0x01;
++    case 0x04:      /* date */
++        return 0x01;
++    case 0x05:      /* month */
++        return 0x01;
++    case 0x06:      /* year */
++        return 0x26;
++    case 0x0f:      /* status: OSF clear, RTC running */
++        return 0x00;
++    default:
++        return 0;
++    }
++}
++
++/* ------------------------------------------------------------------------- */
++/* QMI8658 IMU: WHO_AM_I (0x00) must read 0x05 for the probe to accept it.    */
++
++static uint8_t qmi8658_register(uint8_t reg)
++{
++    switch (reg) {
++    case 0x00:      /* WHO_AM_I */
++        return 0x05;
++    case 0x01:      /* revision */
++        return 0x7c;
++    default:
++        return 0;
++    }
++}
++
++/* ------------------------------------------------------------------------- */
++/* Shared 1-byte-indexed slave core.                                          */
++
++static int x3_i2c_event(I2CSlave *i2c, enum i2c_event event)
++{
++    X3I2CChipState *s = X3_I2C_CHIP(i2c);
++
++    switch (event) {
++    case I2C_START_SEND:
++        s->ptr = -1;
++        s->pos = 0;
++        break;
++    case I2C_START_RECV:
++        s->pos = 0;
++        break;
++    default:
++        break;
++    }
++    return 0;
++}
++
++static int x3_i2c_send(I2CSlave *i2c, uint8_t data)
++{
++    X3I2CChipState *s = X3_I2C_CHIP(i2c);
++
++    if (s->wide) {
++        /* Command codes are one byte; the payload is written separately. */
++        s->ptr = data;
++        s->pos = 0;
++    } else {
++        /* Register-indexed devices take the first byte as the register. */
++        s->ptr = data;
++        s->pos = 0;
++    }
++    return 0;
++}
++
++static uint8_t x3_i2c_recv(I2CSlave *i2c)
++{
++    X3I2CChipState *s = X3_I2C_CHIP(i2c);
++    uint8_t byte;
++
++    if (s->wide) {
++        /* 16-bit little-endian value, low byte first. */
++        uint16_t value = bq27220_register(s->ptr);
++        byte = (s->pos == 0) ? (value & 0xff) : ((value >> 8) & 0xff);
++        s->pos = (s->pos + 1) & 1;
++        return byte;
++    }
++
++    switch (s->kind) {
++    case X3_CHIP_DS3231:
++        byte = ds3231_register(s->ptr);
++        break;
++    case X3_CHIP_QMI8658:
++        byte = qmi8658_register(s->ptr);
++        break;
++    default:
++        byte = 0;
++        break;
++    }
++    if (s->trace && s->reads < 24) {
++        info_report("[X3I2C] kind=%u reg=0x%02x -> 0x%02x", s->kind, s->ptr,
++                    byte);
++        s->reads++;
++    }
++    /* Register-indexed parts auto-increment the pointer on sequential reads. */
++    s->ptr = (uint8_t)(s->ptr + 1);
++    return byte;
++}
++
++static void x3_i2c_reset(DeviceState *dev)
++{
++    X3I2CChipState *s = X3_I2C_CHIP(dev);
++
++    s->ptr = 0;
++    s->pos = 0;
++}
++
++static Property x3_i2c_properties[] = {
++    DEFINE_PROP_UINT8("kind", X3I2CChipState, kind, X3_CHIP_BQ27220),
++    DEFINE_PROP_BOOL("wide", X3I2CChipState, wide, true),
++    DEFINE_PROP_BOOL("trace", X3I2CChipState, trace, false),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
++static void x3_i2c_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
++
++    k->event = x3_i2c_event;
++    k->recv = x3_i2c_recv;
++    k->send = x3_i2c_send;
++    device_class_set_legacy_reset(dc, x3_i2c_reset);
++    device_class_set_props(dc, x3_i2c_properties);
++    dc->desc = "Xteink X3 I2C peripheral";
++}
++
++static const TypeInfo x3_i2c_info = {
++    .name = TYPE_X3_I2C_CHIP,
++    .parent = TYPE_I2C_SLAVE,
++    .instance_size = sizeof(X3I2CChipState),
++    .class_init = x3_i2c_class_init,
++};
++
++static void x3_i2c_register_types(void)
++{
++    type_register_static(&x3_i2c_info);
++}
++
++type_init(x3_i2c_register_types)
+--- include/hw/i2c/xteink_x3_i2c.h
++++ include/hw/i2c/xteink_x3_i2c.h
+@@ -0,0 +1,39 @@
++/*
++ * Xteink X3 I2C peripherals (BQ27220 gauge, DS3231 RTC, QMI8658 IMU).
++ *
++ * Copyright (c) 2026 xteink-shelf fork
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 or
++ * (at your option) any later version.
++ */
++
++#pragma once
++
++#include "hw/i2c/i2c.h"
++
++#define TYPE_X3_I2C_CHIP "xteink.x3-i2c"
++#define X3_I2C_CHIP(obj) \
++    OBJECT_CHECK(X3I2CChipState, (obj), TYPE_X3_I2C_CHIP)
++
++/* 7-bit addresses, matching lib/hal/HalGPIO.h and the freeink-sdk probe. */
++#define X3_I2C_ADDR_BQ27220 0x55
++#define X3_I2C_ADDR_DS3231  0x68
++#define X3_I2C_ADDR_QMI8658 0x6b
++
++typedef enum {
++    X3_CHIP_BQ27220 = 0,
++    X3_CHIP_DS3231  = 1,
++    X3_CHIP_QMI8658 = 2,
++} X3I2CChipKind;
++
++typedef struct X3I2CChipState {
++    I2CSlave parent_obj;
++
++    uint8_t kind;   /* X3I2CChipKind */
++    bool wide;      /* 16-bit little-endian registers (gauge) */
++    bool trace;     /* log register reads (board fingerprint debugging) */
++    uint32_t reads;
++    int ptr;        /* current register / command code */
++    int pos;        /* byte index inside the current value */
++} X3I2CChipState;
+--- hw/i2c/meson.build
++++ hw/i2c/meson.build
+@@ -16,7 +16,7 @@
+ i2c_ss.add(when: 'CONFIG_OMAP', if_true: files('omap_i2c.c'))
+ i2c_ss.add(when: 'CONFIG_PPC4XX', if_true: files('ppc4xx_i2c.c'))
+ i2c_ss.add(when: 'CONFIG_XTENSA_ESP32', if_true: files('esp32_i2c.c'))
+-i2c_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files('esp32_i2c.c'))
++i2c_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files('esp32_i2c.c', 'xteink_x3_i2c.c'))
+ i2c_ss.add(when: 'CONFIG_XTENSA_ESP32S3', if_true: files('esp32_i2c.c'))
+ i2c_ss.add(when: 'CONFIG_PCA954X', if_true: files('i2c_mux_pca954x.c'))
+ i2c_ss.add(when: 'CONFIG_PMBUS', if_true: files('pmbus_device.c'))

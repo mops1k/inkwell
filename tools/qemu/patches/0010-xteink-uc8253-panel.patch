@@ -1,0 +1,277 @@
+--- hw/display/xteink_uc8253.c
++++ hw/display/xteink_uc8253.c
+@@ -0,0 +1,217 @@
++/*
++ * UC8253 e-paper panel as wired on the Xteink X3, modelled as an SSI peripheral.
++ *
++ * The panel is write-only: the firmware frames every byte with a software chip
++ * select (GPIO21) and a data/command line (GPIO4), and the controller reports
++ * progress on BUSY (GPIO6). BUSY is the only thing the driver actually waits
++ * for, and its polarity is "two phase": the firmware waits for the LOW edge and
++ * then for the line to come back HIGH, so the model must actively drive BUSY —
++ * an undriven (floating) line makes the wait spin until its timeout.
++ *
++ * Q2 scope: accept commands and data, latch the command, and return BUSY to idle
++ * after a plausible delay for the commands that raise it (power on, display
++ * refresh, power off, deep sleep). No frame is rendered and no status is read
++ * back; the UC8253 driver on this board never reads from the panel.
++ *
++ * Copyright (c) 2026 xteink-shelf fork
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 or
++ * (at your option) any later version.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/log.h"
++#include "qemu/module.h"
++#include "qemu/timer.h"
++#include "hw/irq.h"
++#include "hw/qdev-properties.h"
++#include "hw/ssi/ssi.h"
++#include "hw/display/xteink_uc8253.h"
++#include "qemu/error-report.h"
++
++/* UC8253 command set, only the ones the model reacts to. */
++#define UC8253_CMD_POWER_OFF    0x02
++#define UC8253_CMD_POWER_ON     0x04
++#define UC8253_CMD_DEEP_SLEEP   0x07
++#define UC8253_CMD_DTM1         0x10
++#define UC8253_CMD_DISPLAY_REFRESH 0x12
++#define UC8253_CMD_DTM2         0x13
++
++/* How long BUSY stays low for each operation, in milliseconds. A real panel
++ * needs hundreds of milliseconds for a refresh; the model only has to make the
++ * driver's wait terminate, so it uses a short, deterministic delay. */
++#define UC8253_BUSY_PON_MS      5
++#define UC8253_BUSY_DRF_MS      20
++#define UC8253_BUSY_POF_MS      3
++#define UC8253_BUSY_DSLP_MS     1
++
++static void xteink_uc8253_busy_timer(void *opaque)
++{
++    XteinkUc8253State *s = XTEINK_UC8253(opaque);
++
++    s->busy = false;
++    qemu_set_irq(s->busy_line, 1);
++}
++
++static void xteink_uc8253_set_busy(XteinkUc8253State *s, uint32_t ms)
++{
++    s->busy = true;
++    qemu_set_irq(s->busy_line, 0);
++    timer_mod(s->busy_timer,
++              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + ms);
++}
++
++static void xteink_uc8253_command(XteinkUc8253State *s, uint8_t cmd)
++{
++    s->cmd = cmd;
++    s->data_bytes = 0;
++    s->commands++;
++
++    if (s->trace_commands && s->commands <= 40) {
++        info_report("[UC8253] cmd 0x%02x (#%u)", cmd, s->commands);
++    }
++
++    switch (cmd) {
++    case UC8253_CMD_POWER_ON:
++        xteink_uc8253_set_busy(s, UC8253_BUSY_PON_MS);
++        break;
++    case UC8253_CMD_DISPLAY_REFRESH:
++        if (s->trace_commands) {
++            info_report("[UC8253] refresh, %u data bytes since last cmd",
++                        s->data_bytes);
++        }
++        xteink_uc8253_set_busy(s, UC8253_BUSY_DRF_MS);
++        break;
++    case UC8253_CMD_POWER_OFF:
++        xteink_uc8253_set_busy(s, UC8253_BUSY_POF_MS);
++        break;
++    case UC8253_CMD_DEEP_SLEEP:
++        xteink_uc8253_set_busy(s, UC8253_BUSY_DSLP_MS);
++        break;
++    default:
++        break;
++    }
++}
++
++static uint32_t xteink_uc8253_transfer(SSIPeripheral *dev, uint32_t val)
++{
++    XteinkUc8253State *s = XTEINK_UC8253(dev);
++
++    if (s->trace_commands && s->bytes < 48) {
++        info_report("[UC8253] byte 0x%02x dc=%d cs=%d", val & 0xff, s->dc,
++                    s->cs);
++    }
++
++    if (s->dc == 0) {
++        xteink_uc8253_command(s, val & 0xff);
++    } else {
++        s->data_bytes++;
++        s->bytes++;
++    }
++
++    /* The panel drives nothing on MISO. */
++    return 0;
++}
++
++static int xteink_uc8253_set_cs(SSIPeripheral *dev, bool select)
++{
++    XteinkUc8253State *s = XTEINK_UC8253(dev);
++
++    if (s->cs == select) {
++        return 0;
++    }
++    s->cs = select;
++    if (!select) {
++        /* A new frame starts; the driver always re-sends a command first. */
++        s->data_bytes = 0;
++    }
++    return 0;
++}
++
++static void xteink_uc8253_dc_handler(void *opaque, int n, int level)
++{
++    XteinkUc8253State *s = XTEINK_UC8253(opaque);
++
++    s->dc = !!level;
++}
++
++static void xteink_uc8253_rst_handler(void *opaque, int n, int level)
++{
++    XteinkUc8253State *s = XTEINK_UC8253(opaque);
++
++    /* Reset is active low; a pulse puts the controller back to its power-on
++     * state, which is idle (BUSY high). */
++    if (!level && s->rst) {
++        s->cmd = 0;
++        s->data_bytes = 0;
++        timer_del(s->busy_timer);
++        s->busy = false;
++        qemu_set_irq(s->busy_line, 1);
++    }
++    s->rst = !!level;
++}
++
++static void xteink_uc8253_realize(SSIPeripheral *dev, Error **errp)
++{
++    XteinkUc8253State *s = XTEINK_UC8253(dev);
++
++    qdev_init_gpio_in_named(DEVICE(dev), xteink_uc8253_dc_handler,
++                            XTEINK_UC8253_GPIO_DC, 1);
++    qdev_init_gpio_in_named(DEVICE(dev), xteink_uc8253_rst_handler,
++                            XTEINK_UC8253_GPIO_RST, 1);
++    qdev_init_gpio_out_named(DEVICE(dev), &s->busy_line,
++                             XTEINK_UC8253_GPIO_BUSY, 1);
++
++    s->busy_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
++                                 xteink_uc8253_busy_timer, s);
++
++    /* Idle: the controller is not refreshing, BUSY is high. */
++    s->dc = 1;
++    s->rst = 1;
++    s->busy = false;
++    s->cs = true;
++    qemu_set_irq(s->busy_line, 1);
++}
++
++static void xteink_uc8253_unrealize(DeviceState *dev)
++{
++    XteinkUc8253State *s = XTEINK_UC8253(dev);
++
++    timer_free(s->busy_timer);
++}
++
++static Property xteink_uc8253_properties[] = {
++    /* Log the command stream while bringing a new panel driver up. */
++    DEFINE_PROP_BOOL("trace-commands", XteinkUc8253State, trace_commands, true),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
++static void xteink_uc8253_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    SSIPeripheralClass *k = SSI_PERIPHERAL_CLASS(klass);
++
++    k->realize = xteink_uc8253_realize;
++    k->transfer = xteink_uc8253_transfer;
++    k->set_cs = xteink_uc8253_set_cs;
++    k->cs_polarity = SSI_CS_LOW;
++
++    dc->unrealize = xteink_uc8253_unrealize;
++    device_class_set_props(dc, xteink_uc8253_properties);
++    dc->desc = "UC8253 e-paper panel (Xteink X3)";
++}
++
++static const TypeInfo xteink_uc8253_info = {
++    .name = TYPE_XTEINK_UC8253,
++    .parent = TYPE_SSI_PERIPHERAL,
++    .instance_size = sizeof(XteinkUc8253State),
++    .class_init = xteink_uc8253_class_init,
++};
++
++static void xteink_uc8253_register_types(void)
++{
++    type_register_static(&xteink_uc8253_info);
++}
++
++type_init(xteink_uc8253_register_types)
+--- include/hw/display/xteink_uc8253.h
++++ include/hw/display/xteink_uc8253.h
+@@ -0,0 +1,42 @@
++/*
++ * UC8253 e-paper panel as wired on the Xteink X3.
++ *
++ * Copyright (c) 2026 xteink-shelf fork
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 or
++ * (at your option) any later version.
++ */
++
++#pragma once
++
++#include "hw/ssi/ssi.h"
++#include "hw/sysbus.h"
++
++#define TYPE_XTEINK_UC8253 "xteink.uc8253"
++#define XTEINK_UC8253(obj) \
++    OBJECT_CHECK(XteinkUc8253State, (obj), TYPE_XTEINK_UC8253)
++
++/* Named GPIO lines connecting the panel to the SoC. */
++#define XTEINK_UC8253_GPIO_DC   "dc"    /* in:  1 = data, 0 = command */
++#define XTEINK_UC8253_GPIO_RST  "rst"   /* in:  reset, active low      */
++#define XTEINK_UC8253_GPIO_BUSY "busy"  /* out: 0 = busy, 1 = idle     */
++
++typedef struct XteinkUc8253State {
++    SSIPeripheral parent_obj;
++
++    qemu_irq busy_line;
++
++    uint8_t dc;
++    uint8_t rst;
++    bool cs;
++    bool busy;
++    bool trace_commands;
++
++    uint8_t cmd;
++    uint32_t data_bytes;    /* data bytes received for the current command */
++    uint32_t commands;      /* commands latched since reset */
++    uint32_t bytes;         /* data bytes since reset */
++
++    QEMUTimer *busy_timer;
++} XteinkUc8253State;
+--- hw/display/meson.build
++++ hw/display/meson.build
+@@ -3,6 +3,9 @@
+ system_ss.add(when: 'CONFIG_DDC', if_true: files('i2c-ddc.c'))
+ system_ss.add(when: 'CONFIG_EDID', if_true: files('edid-generate.c', 'edid-region.c'))
+ 
++# Xteink X3 e-paper panel (UC8253) on the ESP32-C3 general-purpose SPI bus
++system_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files('xteink_uc8253.c'))
++
+ system_ss.add(when: 'CONFIG_FW_CFG_DMA', if_true: files('ramfb.c'), if_false: files('ramfb-stubs.c'))
+ system_ss.add(when: 'CONFIG_FW_CFG_DMA', if_true: files('ramfb-standalone.c'))
+ 

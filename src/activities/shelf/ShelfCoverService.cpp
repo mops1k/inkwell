@@ -1,5 +1,6 @@
 #include "activities/shelf/ShelfCoverService.h"
 
+#include <BookFormat.h>
 #include <HalStorage.h>
 #include <Logging.h>
 
@@ -14,6 +15,23 @@ std::string thumbPathFor(const std::string& bookPath, shelf::ShelfCoverSize size
   const shelf::CoverBox box = shelf::coverBox(size);
   return ReaderActivity::bookCacheDir(bookPath) + "/" +
          ReaderActivity::coverThumbFileName(bookPath, box.width, box.height);
+}
+
+// Cell covers used to be generated aspect-fit into a 3:4 box, so a cover with a
+// different ratio carried white bars inside the bitmap. They are cropped now, and
+// thumbs made the old way have to be rebuilt: the marker makes that happen once
+// per book instead of on every visit.
+constexpr const char* kCellCropMarker = ".covercrop1";
+
+void dropLetterboxedCellThumb(const std::string& bookPath, const std::string& thumbPath) {
+  const std::string cacheDir = ReaderActivity::bookCacheDir(bookPath);
+  if (cacheDir.empty()) return;
+  const std::string marker = cacheDir + "/" + kCellCropMarker;
+  if (Storage.exists(marker.c_str())) return;
+  if (Storage.exists(thumbPath.c_str())) {
+    Storage.remove(thumbPath.c_str());
+  }
+  Storage.writeFile(marker.c_str(), "1");
 }
 
 uint32_t bookFatDateTime(const std::string& path) {
@@ -60,9 +78,27 @@ ShelfCoverService::Attempt& ShelfCoverService::noteFailure(const std::string& th
   return attempts_.back();
 }
 
+std::string ShelfCoverService::existingCover(const std::string& bookPath, shelf::ShelfCoverSize size) const {
+  // A .txt/.md has no artwork: whatever bitmap sits in its cache directory is a
+  // leftover from an older build that synthesised one (it rendered as a black
+  // block with noise). The grid draws its title plate instead.
+  if (!shelf::formatHasArtwork(shelf::detectBookFormat(bookPath))) return {};
+  const std::string thumbPath = thumbPathFor(bookPath, size);
+  const shelf::CoverThumbState state = thumbState(thumbPath, size);
+  if (!state.exists || state.sentinel || !state.complete) return {};
+  return thumbPath;
+}
+
 std::string ShelfCoverService::ensureCover(const std::string& bookPath, shelf::ShelfCoverSize size) {
   const shelf::CoverBox box = shelf::coverBox(size);
   const std::string thumbPath = thumbPathFor(bookPath, size);
+  // No artwork in this format (TXT/Markdown): drop any bogus bitmap an older build
+  // left behind and let the grid draw its own title plate.
+  if (!shelf::formatHasArtwork(shelf::detectBookFormat(bookPath))) {
+    if (Storage.exists(thumbPath.c_str())) Storage.remove(thumbPath.c_str());
+    return {};
+  }
+  if (size == shelf::ShelfCoverSize::Cell) dropLetterboxedCellThumb(bookPath, thumbPath);
   Attempt* attempt = findAttempt(thumbPath);
   const uint8_t previousFailures = attempt != nullptr ? attempt->transientAttempts : 0;
 
@@ -77,8 +113,10 @@ std::string ShelfCoverService::ensureCover(const std::string& bookPath, shelf::S
       break;
   }
 
-  // crop=false: the shelf never cuts or stretches a cover (requirement 6).
-  const ThumbResult result = ReaderActivity::ensureCoverThumb(bookPath, box.width, box.height, false);
+  // crop=true: a cell is a fixed 3:4 frame, so the artwork fills it. Aspect-fit
+  // (crop=false) left white bars inside the bitmap whenever the cover ratio
+  // differed, which the user saw as a white strip beside the picture.
+  const ThumbResult result = ReaderActivity::ensureCoverThumb(bookPath, box.width, box.height, true);
   switch (shelf::decideAfterFailure(result, previousFailures)) {
     case shelf::CoverDecision::Reuse:
       if (attempt != nullptr) attempt->transientAttempts = 0;

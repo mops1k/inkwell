@@ -1,0 +1,278 @@
+--- hw/misc/esp32c3_saradc.c
++++ hw/misc/esp32c3_saradc.c
+@@ -17,6 +17,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/error-report.h"
+ #include "qemu/log.h"
+ #include "qemu/module.h"
+ #include "qapi/error.h"
+@@ -35,18 +36,33 @@
+ 
+ static void esp32c3_saradc_complete(ESP32C3SarAdcState *s)
+ {
+-    /* Both ADC units report the same idle value: the board's ladder and the
+-     * battery divider are not modelled yet. */
+-    s->regs[R_SARADC_DATA1] = s->idle_raw & 0xfff;
+-    s->regs[R_SARADC_DATA2] = s->idle_raw & 0xfff;
++    unsigned ch = (s->regs[R_SARADC_ONETIME_SAMPLE] >>
++                   ESP32C3_SARADC_ONETIME_CHANNEL_SHIFT) &
++                  ESP32C3_SARADC_ONETIME_CHANNEL_MASK;
++    uint32_t raw = (ch < ESP32C3_SARADC_CHANNELS) ? s->ch_raw[ch]
++                                                  : s->idle_raw;
++
++    /* Both ADC units report the same value: the board's ladder and the
++     * battery divider are not modelled separately yet. */
++    s->regs[R_SARADC_DATA1] = raw & 0xfff;
++    s->regs[R_SARADC_DATA2] = raw & 0xfff;
+     s->raw_status |= ESP32C3_SARADC_ADC1_DONE | ESP32C3_SARADC_ADC2_DONE;
+     esp32c3_saradc_update_irq(s);
+ 
+ #if SARADC_DEBUG
+-    info_report("[SARADC] conversion done, raw=0x%x", s->idle_raw);
++    info_report("[SARADC] conversion done, channel=%u raw=0x%x", ch, raw);
+ #endif
+ }
+ 
++void esp32c3_saradc_set_channel_raw(ESP32C3SarAdcState *s, unsigned channel,
++                                    uint32_t raw)
++{
++    if (channel >= ESP32C3_SARADC_CHANNELS) {
++        return;
++    }
++    s->ch_raw[channel] = raw & 0xfff;
++}
++
+ static uint64_t esp32c3_saradc_read(void *opaque, hwaddr addr, unsigned int size)
+ {
+     ESP32C3SarAdcState *s = ESP32C3_SARADC(opaque);
+@@ -143,12 +159,19 @@
+ 
+     memset(s->regs, 0, sizeof(s->regs));
+     s->raw_status = 0;
++    for (int i = 0; i < ESP32C3_SARADC_CHANNELS; i++) {
++        s->ch_raw[i] = s->idle_raw;
++    }
+     qemu_set_irq(s->irq, 0);
+ }
+ 
+ static void esp32c3_saradc_realize(DeviceState *dev, Error **errp)
+ {
+-    (void) dev;
++    ESP32C3SarAdcState *s = ESP32C3_SARADC(dev);
++
++    for (int i = 0; i < ESP32C3_SARADC_CHANNELS; i++) {
++        s->ch_raw[i] = s->idle_raw;
++    }
+     (void) errp;
+ }
+ 
+--- include/hw/misc/esp32c3_saradc.h
++++ include/hw/misc/esp32c3_saradc.h
+@@ -31,6 +31,11 @@
+ #define ESP32C3_SARADC_ONETIME_ADC1      BIT(31)
+ #define ESP32C3_SARADC_ONETIME_ADC2      BIT(30)
+ 
++/* ONETIME_SAMPLE channel field: ADC1 channel N == GPIO N (GPIO0..GPIO4) */
++#define ESP32C3_SARADC_ONETIME_CHANNEL_SHIFT 25
++#define ESP32C3_SARADC_ONETIME_CHANNEL_MASK  0xf
++#define ESP32C3_SARADC_CHANNELS              5
++
+ /* INT_RAW / INT_ENA bits */
+ #define ESP32C3_SARADC_ADC1_DONE         BIT(31)
+ #define ESP32C3_SARADC_ADC2_DONE         BIT(30)
+@@ -49,5 +54,14 @@
+      * "nothing connected" for the X3 ADC button ladder (no button pressed). */
+     uint32_t idle_raw;
+ 
++    /* Per-channel ADC1 values (channel N = GPIO N). The ADC ladder / button
++     * device overrides a channel while a key is pressed. */
++    uint32_t ch_raw[ESP32C3_SARADC_CHANNELS];
++
+     qemu_irq irq;
+ } ESP32C3SarAdcState;
++
++/* Injection API used by xteink-buttons: the next conversion of ADC1 @channel
++ * returns @raw (12 bits). Channel == GPIO number for GPIO0..GPIO4. */
++void esp32c3_saradc_set_channel_raw(ESP32C3SarAdcState *s, unsigned channel,
++                                    uint32_t raw);
+--- hw/gpio/xteink_buttons.c
++++ hw/gpio/xteink_buttons.c
+@@ -17,6 +17,13 @@
+  *
+  * Pins that are not specified (default is ESP_GPIO_PIN_UNSET) are left alone.
+  *
++ * Buttons can also be injected through the SoC's ADC ladder (the way the real
++ * X3 reads back/confirm/left/right/up/down): give the button an ADC channel
++ * with "<key>-adc" (ADC1 channel == GPIO number) and the raw value to report
++ * while it is held with "<key>-adc-raw". The device then overrides the SAR ADC
++ * channel value instead of driving a digital line; without a channel the
++ * digital "<key>-gpio" path is used.
++ *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License version 2 or
+  * (at your option) any later version.
+@@ -33,6 +40,7 @@
+ #include "hw/qdev-properties-system.h"
+ #include "chardev/char-fe.h"
+ #include "hw/gpio/esp32_gpio.h"
++#include "hw/misc/esp32c3_saradc.h"
+ 
+ #define TYPE_XTEINK_BUTTONS "xteink-buttons"
+ #define XTEINK_BUTTONS(obj) \
+@@ -56,8 +64,13 @@
+ 
+     /* GPIO numbers configured on the command line, indexed by button. */
+     uint32_t gpio[XTEINK_BTN_COUNT];
++    /* ADC1 channel ( == GPIO number) and raw value while pressed. */
++    uint32_t adc_pin[XTEINK_BTN_COUNT];
++    uint32_t adc_raw[XTEINK_BTN_COUNT];
+     /* GPIO input lines of the SoC GPIO model, one per configured button. */
+     qemu_irq line[XTEINK_BTN_COUNT];
++    /* SAR ADC model, used by the buttons that live on the ADC ladder. */
++    ESP32C3SarAdcState *saradc;
+     bool connected;
+ } XteinkButtonsState;
+ 
+@@ -79,11 +92,24 @@
+     qemu_set_irq(s->line[idx], level);
+ }
+ 
++/* ADC-ladder buttons: report the per-key raw value while held, the idle value
++ * (no key pressed) otherwise. */
++static void xteink_buttons_set_adc(XteinkButtonsState *s, int idx, bool pressed)
++{
++    if (!s->saradc || s->adc_pin[idx] == ESP_GPIO_PIN_UNSET) {
++        return;
++    }
++    esp32c3_saradc_set_channel_raw(s->saradc, s->adc_pin[idx],
++                                   pressed ? s->adc_raw[idx]
++                                           : s->saradc->idle_raw);
++}
++
+ static void xteink_buttons_release_all(XteinkButtonsState *s)
+ {
+     for (int i = 0; i < XTEINK_BTN_COUNT; i++) {
+         /* Active-low buttons: HIGH is the released (pulled-up) state. */
+         xteink_buttons_set_level(s, i, 1);
++        xteink_buttons_set_adc(s, i, false);
+     }
+ }
+ 
+@@ -114,6 +140,12 @@
+     gpio = ESP32_GPIO(DEVICE(gpio_obj));
+ 
+     for (int i = 0; i < XTEINK_BTN_COUNT; i++) {
++        if (s->gpio[i] != ESP_GPIO_PIN_UNSET &&
++            s->adc_pin[i] != ESP_GPIO_PIN_UNSET) {
++            error_setg(errp, "xteink-buttons: button %d has both a digital "
++                             "pin and an ADC channel", i);
++            return false;
++        }
+         if (s->gpio[i] == ESP_GPIO_PIN_UNSET) {
+             continue;
+         }
+@@ -127,6 +159,31 @@
+         qemu_set_irq(s->line[i], 1);
+     }
+ 
++    for (int i = 0; i < XTEINK_BTN_COUNT; i++) {
++        if (s->adc_pin[i] == ESP_GPIO_PIN_UNSET) {
++            continue;
++        }
++        if (!s->saradc) {
++            Object *adc_obj = object_resolve_path_component(machine, "saradc");
++
++            if (!adc_obj ||
++                !object_dynamic_cast(adc_obj, TYPE_ESP32C3_SARADC)) {
++                error_setg(errp, "xteink-buttons: SAR ADC device not found "
++                                 "(expected the machine child \"saradc\")");
++                return false;
++            }
++            s->saradc = ESP32C3_SARADC(adc_obj);
++        }
++        if (s->adc_pin[i] >= ESP32C3_SARADC_CHANNELS) {
++            error_setg(errp, "xteink-buttons: ADC channel %u is out of range "
++                             "(0..%d)", s->adc_pin[i],
++                       ESP32C3_SARADC_CHANNELS - 1);
++            return false;
++        }
++        esp32c3_saradc_set_channel_raw(s->saradc, s->adc_pin[i],
++                                       s->saradc->idle_raw);
++    }
++
+     s->connected = true;
+     return true;
+ }
+@@ -143,8 +200,12 @@
+ 
+     for (int i = 0; i < XTEINK_BTN_COUNT; i++) {
+         if (xteink_buttons_chars[i] == lower) {
+-            /* Active-low buttons: pressed drives the line LOW. */
+-            xteink_buttons_set_level(s, i, press ? 0 : 1);
++            if (s->adc_pin[i] != ESP_GPIO_PIN_UNSET) {
++                xteink_buttons_set_adc(s, i, press);
++            } else {
++                /* Active-low buttons: pressed drives the line LOW. */
++                xteink_buttons_set_level(s, i, press ? 0 : 1);
++            }
+             return;
+         }
+     }
+@@ -203,9 +264,47 @@
+                        gpio[XTEINK_BTN_DOWN], ESP_GPIO_PIN_UNSET),
+     DEFINE_PROP_UINT32("power-gpio", XteinkButtonsState,
+                        gpio[XTEINK_BTN_POWER], ESP_GPIO_PIN_UNSET),
++    /* ADC-ladder buttons. Defaults are the averaged raw values measured on a
++     * real X3 (InputManager::ADC_RANGES_*); the X3 reads group 1 from GPIO1 and
++     * group 2 from GPIO2, so the example command below uses -adc=1 / -adc=2. */
++    DEFINE_PROP_UINT32("back-adc", XteinkButtonsState,
++                       adc_pin[XTEINK_BTN_BACK], ESP_GPIO_PIN_UNSET),
++    DEFINE_PROP_UINT32("back-adc-raw", XteinkButtonsState,
++                       adc_raw[XTEINK_BTN_BACK], 3512),
++    DEFINE_PROP_UINT32("confirm-adc", XteinkButtonsState,
++                       adc_pin[XTEINK_BTN_CONFIRM], ESP_GPIO_PIN_UNSET),
++    DEFINE_PROP_UINT32("confirm-adc-raw", XteinkButtonsState,
++                       adc_raw[XTEINK_BTN_CONFIRM], 2694),
++    DEFINE_PROP_UINT32("left-adc", XteinkButtonsState,
++                       adc_pin[XTEINK_BTN_LEFT], ESP_GPIO_PIN_UNSET),
++    DEFINE_PROP_UINT32("left-adc-raw", XteinkButtonsState,
++                       adc_raw[XTEINK_BTN_LEFT], 1493),
++    DEFINE_PROP_UINT32("right-adc", XteinkButtonsState,
++                       adc_pin[XTEINK_BTN_RIGHT], ESP_GPIO_PIN_UNSET),
++    DEFINE_PROP_UINT32("right-adc-raw", XteinkButtonsState,
++                       adc_raw[XTEINK_BTN_RIGHT], 5),
++    DEFINE_PROP_UINT32("up-adc", XteinkButtonsState,
++                       adc_pin[XTEINK_BTN_UP], ESP_GPIO_PIN_UNSET),
++    DEFINE_PROP_UINT32("up-adc-raw", XteinkButtonsState,
++                       adc_raw[XTEINK_BTN_UP], 2242),
++    DEFINE_PROP_UINT32("down-adc", XteinkButtonsState,
++                       adc_pin[XTEINK_BTN_DOWN], ESP_GPIO_PIN_UNSET),
++    DEFINE_PROP_UINT32("down-adc-raw", XteinkButtonsState,
++                       adc_raw[XTEINK_BTN_DOWN], 5),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+ 
++static void xteink_buttons_instance_init(Object *obj)
++{
++    XteinkButtonsState *s = XTEINK_BUTTONS(obj);
++
++    /* Buttons without an "<key>-adc" property would otherwise keep the
++     * zero-initialised channel number, which is a valid ADC channel. */
++    for (int i = 0; i < XTEINK_BTN_COUNT; i++) {
++        s->adc_pin[i] = ESP_GPIO_PIN_UNSET;
++    }
++}
++
+ static void xteink_buttons_class_init(ObjectClass *klass, void *data)
+ {
+     DeviceClass *dc = DEVICE_CLASS(klass);
+@@ -222,6 +321,7 @@
+     .name = TYPE_XTEINK_BUTTONS,
+     .parent = TYPE_DEVICE,
+     .instance_size = sizeof(XteinkButtonsState),
++    .instance_init = xteink_buttons_instance_init,
+     .class_init = xteink_buttons_class_init,
+ };
+ 

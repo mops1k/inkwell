@@ -1,0 +1,57 @@
+--- hw/i2c/xteink_x3_i2c.c
++++ hw/i2c/xteink_x3_i2c.c
+@@ -143,31 +143,36 @@
+     uint8_t byte;
+ 
+     if (s->wide) {
+-        /* 16-bit little-endian value, low byte first. */
++        /* 16-bit little-endian value, low byte first. The command code stays in
++         * ptr: the gauge is addressed by command, not by an incrementing
++         * register index. */
+         uint16_t value = bq27220_register(s->ptr);
+         byte = (s->pos == 0) ? (value & 0xff) : ((value >> 8) & 0xff);
+         s->pos = (s->pos + 1) & 1;
+-        return byte;
++    } else {
++        switch (s->kind) {
++        case X3_CHIP_DS3231:
++            byte = ds3231_register(s->ptr);
++            break;
++        case X3_CHIP_QMI8658:
++            byte = qmi8658_register(s->ptr);
++            break;
++        default:
++            byte = 0;
++            break;
++        }
++        /* Register-indexed parts auto-increment the pointer on sequential reads. */
++        s->ptr = (uint8_t)(s->ptr + 1);
+     }
+ 
+-    switch (s->kind) {
+-    case X3_CHIP_DS3231:
+-        byte = ds3231_register(s->ptr);
+-        break;
+-    case X3_CHIP_QMI8658:
+-        byte = qmi8658_register(s->ptr);
+-        break;
+-    default:
+-        byte = 0;
+-        break;
+-    }
+-    if (s->trace && s->reads < 24) {
+-        info_report("[X3I2C] kind=%u reg=0x%02x -> 0x%02x", s->kind, s->ptr,
+-                    byte);
++    /* One line per byte handed to the guest, whichever framing the chip uses:
++     * the fuel gauge (wide) used to be silent and the boot log only ever showed
++     * the RTC and the IMU (Q4). */
++    if (s->trace && s->reads < 40) {
++        info_report("[X3I2C] kind=%u wide=%u reg=0x%02x -> 0x%02x", s->kind,
++                    s->wide ? 1 : 0, s->ptr, byte);
+         s->reads++;
+     }
+-    /* Register-indexed parts auto-increment the pointer on sequential reads. */
+-    s->ptr = (uint8_t)(s->ptr + 1);
+     return byte;
+ }
+ 

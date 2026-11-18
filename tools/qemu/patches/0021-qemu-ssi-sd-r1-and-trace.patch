@@ -1,0 +1,141 @@
+--- hw/sd/ssi-sd.c
++++ hw/sd/ssi-sd.c
+@@ -39,6 +39,57 @@
+ do { fprintf(stderr, "ssi_sd: error: " fmt , ## __VA_ARGS__);} while (0)
+ #endif
+ 
++/* Command-level trace for board bring-up: SSISD_TRACE=1 prints one line per
++ * command (and one per data block) on stderr, capped so a long boot log stays
++ * readable (SSISD_TRACE_MAX raises the cap). It is what shows that SdFat
++ * mounted the card: CMD17/CMD18 with arg 0 is the MBR, then the partition boot
++ * sector, then the FAT and the directory clusters. */
++#define SSISD_TRACE_LINES 200
++static int ssi_sd_trace_enabled(void)
++{
++    static int cached = -1;
++
++    if (cached < 0) {
++        const char *env = getenv("SSISD_TRACE");
++        cached = (env && *env && *env != '0');
++    }
++    return cached;
++}
++
++static int ssi_sd_trace_max(void)
++{
++    static int cached = -1;
++
++    if (cached < 0) {
++        const char *env = getenv("SSISD_TRACE_MAX");
++        cached = (env && *env) ? atoi(env) : SSISD_TRACE_LINES;
++        if (cached <= 0) {
++            cached = SSISD_TRACE_LINES;
++        }
++    }
++    return cached;
++}
++
++static void G_GNUC_PRINTF(1, 2) ssi_sd_trace(const char *fmt, ...)
++{
++    static int lines;
++    va_list ap;
++
++    if (!ssi_sd_trace_enabled()) {
++        return;
++    }
++    if (lines++ >= ssi_sd_trace_max()) {
++        return;
++    }
++    fprintf(stderr, "ssi_sd: [%" PRId64 " ms] ",
++            qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL));
++    va_start(ap, fmt);
++    vfprintf(stderr, fmt, ap);
++    va_end(ap);
++}
++
++#define SSISD_TRACE(...) ssi_sd_trace(__VA_ARGS__)
++
+ typedef enum {
+     SSI_SD_CMD = 0,
+     SSI_SD_CMDARG,
+@@ -64,6 +115,13 @@
+     int32_t arglen;
+     int32_t response_pos;
+     int32_t stopping;
++    /* The card's R1 "in idle state" bit, tracked from CMD0/CMD1/ACMD41 so the
++     * R3/R7 responses of CMD8/CMD58 can carry a real R1 byte. The SD protocol
++     * layer returns only the payload of R3/R7 (the 4 OCR/VHS bytes), so the R1
++     * has to be built here — and a hardcoded "1" (idle) makes a driver that
++     * checks R1 after ACMD41 think the card never left idle, which is exactly
++     * where SdFat stopped before mounting (Q4). */
++    bool card_idle;
+     SDBus sdbus;
+ };
+ 
+@@ -172,15 +230,20 @@
+             request.arg = ldl_be_p(s->cmdarg);
+             DPRINTF("CMD%d arg 0x%08x\n", s->cmd, request.arg);
+             s->arglen = sdbus_do_command(&s->sdbus, &request, longresp);
++            SSISD_TRACE("cmd=%d arg=0x%08x rlen=%d\n", request.cmd, request.arg,
++                        s->arglen);
+             if (s->arglen <= 0) {
+                 s->arglen = 1;
+                 s->response[0] = 4;
+                 DPRINTF("SD command failed\n");
+             } else if (s->cmd == 8 || s->cmd == 58) {
+-                /* CMD8/CMD58 returns R3/R7 response */
++                /* CMD8/CMD58 return R3/R7: an R1 byte followed by the 4-byte
++                 * payload. R1 reflects whether the card already left idle, so
++                 * after a successful ACMD41 CMD58 answers 0x00 (SdFat requires
++                 * that to accept the card and go on to read the CSD/MBR). */
+                 DPRINTF("Returned R3/R7\n");
+                 s->arglen = 5;
+-                s->response[0] = 1;
++                s->response[0] = s->card_idle ? 1 : 0;
+                 memcpy(&s->response[1], longresp, 4);
+             } else if (s->arglen != 4) {
+                 BADF("Unexpected response to cmd %d\n", s->cmd);
+@@ -237,6 +300,13 @@
+                 s->response[0] = status >> 8;
+                 s->response[1] = status;
+                 DPRINTF("Card status 0x%02x\n", status);
++                /* CMD0 puts the card back into idle; CMD1/ACMD41 leave it. Keep
++                 * the R1 idle bit in sync for the CMD8/CMD58 responses. */
++                if (s->cmd == 0) {
++                    s->card_idle = true;
++                } else if (s->cmd == 1 || s->cmd == 41) {
++                    s->card_idle = (status & SSI_SDR_IDLE) != 0;
++                }
+             }
+             s->mode = SSI_SD_PREP_RESP;
+             s->response_pos = 0;
+@@ -251,6 +321,11 @@
+     case SSI_SD_RESPONSE:
+         if (s->response_pos < s->arglen) {
+             DPRINTF("Response 0x%02x\n", s->response[s->response_pos]);
++            if (s->response_pos == 0) {
++                /* R1 (or R3/R7 for CMD8/CMD58): the byte the driver decides on. */
++                SSISD_TRACE("r1 cmd=%d = 0x%02x\n", s->cmd,
++                            s->response[0]);
++            }
+             return s->response[s->response_pos++];
+         }
+         if (s->stopping) {
+@@ -290,6 +365,7 @@
+         s->response_pos++;
+         if (s->response_pos == 2) {
+             DPRINTF("CRC16 read end\n");
++            SSISD_TRACE("read done cmd=%d bytes=%d\n", s->cmd, s->read_bytes);
+             if (s->read_bytes == 512 && s->cmd != 17) {
+                 s->mode = SSI_SD_PREP_DATA;
+             } else {
+@@ -387,6 +463,9 @@
+     s->arglen = 0;
+     s->response_pos = 0;
+     s->stopping = 0;
++    /* A card straight out of reset is in its idle state (R1 bit0 set) until a
++     * CMD1/ACMD41 completes. */
++    s->card_idle = true;
+ }
+ 
+ static void ssi_sd_class_init(ObjectClass *klass, void *data)

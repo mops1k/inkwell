@@ -16,4 +16,9 @@ BookFormat detectBookFormat(const std::string& path);
 // False when the archive is neither EPUB-shaped nor FB2-bearing.
 bool detectBookFormatFromZip(const std::string& path, BookFormat& out);
 
+// True when the format can carry artwork of its own (embedded cover, page image).
+// A plain .txt/.md has none: the shelf must draw its own title plate instead of
+// asking the cover pipeline, which used to synthesise a bogus bitmap for them.
+bool formatHasArtwork(BookFormat format);
+
 }  // namespace shelf

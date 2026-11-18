@@ -1,0 +1,68 @@
+--- hw/gpio/esp32_gpio.c
++++ hw/gpio/esp32_gpio.c
+@@ -169,6 +169,28 @@
+     return r;
+ }
+ 
++/* Push the level each pin actually drives onto its output line. A pin only
++ * drives once software has made it an output, so the level is
++ * (gpio_out & gpio_enable); external devices take their control signals from
++ * these lines (panel CS/DC/RST, SD CS, rail enables). */
++static void esp32_gpio_sync_outputs(Esp32GpioState *s)
++{
++    uint32_t eff = s->gpio_out & s->gpio_enable;
++    uint32_t diff = eff ^ s->gpio_out_eff;
++    unsigned pin;
++
++    if (!diff) {
++        return;
++    }
++
++    for (pin = 0; pin < ESP_GPIO_MAX_PINS; pin++) {
++        if (diff & (1u << pin)) {
++            qemu_set_irq(s->out_lines[pin], (eff >> pin) & 1);
++        }
++    }
++    s->gpio_out_eff = eff;
++}
++
+ static void esp32_gpio_write(void *opaque, hwaddr addr,
+                        uint64_t value, unsigned int size)
+ {
+@@ -203,6 +225,8 @@
+                                                s->pin_cfg_off)) >= 0) {
+         s->pin_cfg[pin] = (uint32_t)value;
+     }
++
++    esp32_gpio_sync_outputs(s);
+     esp32_gpio_refresh_levels(s, 0);
+     /* A freshly enabled level interrupt fires right away on real hardware. */
+     if (pin >= 0 && pin < ESP_GPIO_MAX_PINS) {
+@@ -295,6 +319,11 @@
+      * drive any GPIO level through qdev_get_gpio_in(). */
+     qdev_init_gpio_in(DEVICE(obj), esp32_gpio_in_handler, ESP_GPIO_MAX_PINS);
+ 
++    /* One output line per pin: the level the pin drives once it is configured
++     * as an output, so board models can take their CS/DC/RST/enable signals
++     * from the GPIO matrix exactly as the hardware does. */
++    qdev_init_gpio_out(DEVICE(obj), s->out_lines, ESP_GPIO_MAX_PINS);
++
+     memory_region_init_io(&s->iomem, obj, &gpio_ops, s,
+                           TYPE_ESP32_GPIO, 0x1000);
+     sysbus_init_mmio(sbd, &s->iomem);
+--- include/hw/gpio/esp32_gpio.h
++++ include/hw/gpio/esp32_gpio.h
+@@ -63,6 +63,13 @@
+     uint32_t gpio_in;
+     uint32_t gpio_in_mask;
+ 
++    /* Output lines: one qdev output IRQ per pin (qdev_init_gpio_out). The level
++     * follows (gpio_out & gpio_enable), i.e. what the pin actually drives once
++     * software has made it an output. External devices (panel CS/DC/RST, SD CS,
++     * rail enables) take their control signals from here. */
++    qemu_irq out_lines[ESP_GPIO_MAX_PINS];
++    uint32_t gpio_out_eff;  /* last level pushed onto out_lines */
++
+     /* GPIO matrix registers, one entry per pin */
+     uint32_t func_in_sel[ESP_GPIO_MAX_PINS];  /* FUNC0_IN_SEL_CFG  */
+     uint32_t func_out_sel[ESP_GPIO_MAX_PINS]; /* FUNC0_OUT_SEL_CFG */

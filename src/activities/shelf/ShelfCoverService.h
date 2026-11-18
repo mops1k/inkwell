@@ -18,6 +18,11 @@ class ShelfCoverService {
   // caller should simply not draw a cover on this pass.
   std::string ensureCover(const std::string& bookPath, shelf::ShelfCoverSize size);
 
+  // Existing, complete cover for this book and size, or an empty string. Used for
+  // the first paint: reading a finished thumbnail is fast, generating one is not,
+  // so the grid appears immediately and covers arrive one per loop tick.
+  std::string existingCover(const std::string& bookPath, shelf::ShelfCoverSize size) const;
+
   // Drop every derived artifact of a book that left the card: its thumbnail
   // cache directory only — user sidecar images are never touched.
   static void forgetBook(const std::string& bookPath);

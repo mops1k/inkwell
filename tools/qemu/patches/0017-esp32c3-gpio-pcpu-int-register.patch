@@ -1,0 +1,77 @@
+--- include/hw/gpio/esp32_gpio.h
++++ include/hw/gpio/esp32_gpio.h
+@@ -84,6 +84,9 @@
+     uint32_t status_off;         /* GPIO_STATUS_REG offset */
+     uint32_t status_w1ts_off;    /* GPIO_STATUS_W1TS_REG offset */
+     uint32_t status_w1tc_off;    /* GPIO_STATUS_W1TC_REG offset */
++    /* Per-CPU pending interrupt register (0x5c on the C3, absent on the ESP32).
++     * ESP-IDF's GPIO ISR reads the pending set from here; see esp32_gpio.c. */
++    uint32_t pcpu_int_off;
+     uint32_t func0_in_sel_off;   /* FUNC0_IN_SEL_CFG base offset */
+     uint32_t func0_out_sel_off;  /* FUNC0_OUT_SEL_CFG base offset */
+     uint32_t pin_cfg_off;        /* PIN0_CNF base offset */
+--- hw/gpio/esp32_gpio.c
++++ hw/gpio/esp32_gpio.c
+@@ -57,7 +57,7 @@
+ 
+ /* Recompute the per-pin interrupt-enable mask and drive the (level) GPIO IRQ
+  * towards the interrupt matrix. */
+-static void esp32_gpio_update_irq(Esp32GpioState *s)
++static uint32_t esp32_gpio_int_ena_mask(Esp32GpioState *s)
+ {
+     uint32_t mask = 0;
+     unsigned pin;
+@@ -68,8 +68,14 @@
+             mask |= 1u << pin;
+         }
+     }
+-    s->int_ena_mask = mask;
+-    qemu_set_irq(s->irq, (s->status & mask) != 0);
++
++    return mask;
++}
++
++static void esp32_gpio_update_irq(Esp32GpioState *s)
++{
++    s->int_ena_mask = esp32_gpio_int_ena_mask(s);
++    qemu_set_irq(s->irq, (s->status & s->int_ena_mask) != 0);
+ }
+ 
+ /* Apply the interrupt configured in PINx_CNF to a level change of one pin. */
+@@ -155,6 +161,16 @@
+             (s->gpio_pullup & ~s->gpio_enable & ~s->gpio_in_mask);
+     } else if (s->status_off && addr == s->status_off) {
+         r = s->status;
++    } else if (s->pcpu_int_off && addr == s->pcpu_int_off) {
++        /* GPIO_PCPU_INT: the pending interrupts of this CPU, i.e. the status
++         * bits whose pin has its interrupt enabled. ESP-IDF's GPIO ISR reads
++         * exactly this register to decide what to dispatch and then clears
++         * GPIO_STATUS through STATUS_W1TC. Without it the ISR sees an empty
++         * pending set, returns without clearing STATUS, the level interrupt
++         * stays asserted and the CPU never leaves the interrupt handler —
++         * which is what stopped the firmware right after the panel's first
++         * BUSY edge (Q4). */
++        r = s->status & esp32_gpio_int_ena_mask(s);
+     } else if ((pin = esp32_gpio_pin_from_addr(s, addr,
+                                                s->func0_in_sel_off)) >= 0) {
+         r = s->func_in_sel[pin];
+--- include/hw/gpio/esp32c3_gpio.h
++++ include/hw/gpio/esp32c3_gpio.h
+@@ -30,6 +30,7 @@
+ #define ESP32C3_GPIO_STATUS_OFF            0x44
+ #define ESP32C3_GPIO_STATUS_W1TS_OFF       0x48
+ #define ESP32C3_GPIO_STATUS_W1TC_OFF       0x4c
++#define ESP32C3_GPIO_PCPU_INT_OFF          0x5c   /* per-CPU pending set */
+ #define ESP32C3_GPIO_PIN0_CNF_OFF          0x74   /* +4 per pin */
+ #define ESP32C3_GPIO_FUNC0_IN_SEL_CFG_OFF  0x154  /* +4 per pin */
+ #define ESP32C3_GPIO_FUNC0_OUT_SEL_CFG_OFF 0x554  /* +4 per pin */
+--- hw/gpio/esp32c3_gpio.c
++++ hw/gpio/esp32c3_gpio.c
+@@ -39,6 +39,7 @@
+     s->status_off = ESP32C3_GPIO_STATUS_OFF;
+     s->status_w1ts_off = ESP32C3_GPIO_STATUS_W1TS_OFF;
+     s->status_w1tc_off = ESP32C3_GPIO_STATUS_W1TC_OFF;
++    s->pcpu_int_off = ESP32C3_GPIO_PCPU_INT_OFF;
+     s->pin_cfg_off = ESP32C3_GPIO_PIN0_CNF_OFF;
+     s->func0_in_sel_off = ESP32C3_GPIO_FUNC0_IN_SEL_CFG_OFF;
+     s->func0_out_sel_off = ESP32C3_GPIO_FUNC0_OUT_SEL_CFG_OFF;

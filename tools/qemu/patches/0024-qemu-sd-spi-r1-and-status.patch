@@ -1,0 +1,35 @@
+--- hw/sd/sd.c
++++ hw/sd/sd.c
+@@ -1649,7 +1649,11 @@
+     }
+ 
+     if (sd_is_spi(sd)) {
+-        return sd_r2_s;
++        /* R2 in SPI mode is R1 plus one more status byte — not the 16-byte
++         * CSD the native sd_r2_s carries. ssi-sd turns a 4-byte R1 payload
++         * into the 2-byte R2 (it emits two bytes when the command is CMD13),
++         * so hand it the 32-bit card status. */
++        return sd_r1;
+     }
+ 
+     return sd_req_rca_same(sd, req) ? sd_r1 : sd_r0;
+@@ -2301,6 +2305,19 @@
+         sd->data_offset = 0;
+         /* fall-through */
+     case sd_illegal:
++        /*
++         * SPI is a request/response protocol without a separate "no answer":
++         * the card always shifts out R1, and an illegal command is reported
++         * through its ILLEGAL_COMMAND bit. Returning zero bytes made the SPI
++         * adapter invent an R1 and left the driver without the real status —
++         * SdFat's write path reads R1 after CMD24 and needs the card's own
++         * answer (Q6, patch 0024).
++         */
++        if (rtype == sd_illegal && sd_is_spi(sd)) {
++            sd_response_r1_make(sd, response);
++            rsplen = 4;
++            break;
++        }
+         rsplen = 0;
+         break;
+     default:

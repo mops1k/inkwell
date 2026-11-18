@@ -1,0 +1,104 @@
+--- include/hw/i2c/esp32_i2c.h
++++ include/hw/i2c/esp32_i2c.h
+@@ -24,6 +24,8 @@
+     Fifo8 rx_fifo;
+     Fifo8 tx_fifo;
+     bool trans_ongoing;
++    /* Command encoding of the i2c v2 (RISC-V) controllers: READ=3, STOP=2. */
++    bool riscv_cmd_encoding;
+ 
+     uint32_t ctr_reg;
+     uint32_t timeout_reg;
+@@ -99,18 +101,26 @@
+ 
+ /* I2C_CMD.OPCODE values.
+  *
+- * The original ESP32 (Xtensa) encodes a repeated START as 0. The ESP32-C3 and
+- * the other RISC-V parts encode it as 6, while WRITE/READ/STOP/END keep their
+- * values. The model is shared by both families, so both encodings must be
+- * accepted: treating 6 as an unknown opcode silently breaks every
+- * write-then-read transaction on the C3 (the gauge, RTC and touch probes). */
++ * The original ESP32 (Xtensa, i2c v1) encodes a repeated START as 0, READ as 2
++ * and STOP as 3. The ESP32-C3 — like the other RISC-V parts and i2c v2 in
++ * general — encodes a repeated START as 6, but also *swaps* READ and STOP:
++ * READ is 3 and STOP is 2 (hal/esp32c3/include/hal/i2c_ll.h:
++ * I2C_LL_CMD_READ 3, I2C_LL_CMD_STOP 2).
++ *
++ * The model is shared by both families, so the encoding is selected per
++ * instance through the "riscv-cmd-encoding" property, which the C3 machine
++ * sets. Getting this wrong is silent: a READ decoded as STOP ends the
++ * transaction early, TRANS_COMPLETE is raised with an empty RX FIFO, and the
++ * driver reports a failed transfer instead of a bus error. */
+ typedef enum {
+-    I2C_OPCODE_RSTART    = 0,
++    I2C_OPCODE_RSTART    = 0,   /* i2c v1 (Xtensa ESP32) */
+     I2C_OPCODE_WRITE     = 1,
+     I2C_OPCODE_READ      = 2,
+     I2C_OPCODE_STOP      = 3,
+     I2C_OPCODE_END       = 4,
+-    I2C_OPCODE_RSTART_C3 = 6,
++    I2C_OPCODE_RSTART_C3 = 6,   /* i2c v2 (ESP32-C3 and other RISC-V parts) */
++    I2C_OPCODE_STOP_C3   = 2,   /* same value as I2C_OPCODE_READ above */
++    I2C_OPCODE_READ_C3   = 3,   /* same value as I2C_OPCODE_STOP above */
+ } i2c_opcode_t;
+ 
+ #endif /* ESP32_I2C_H */
+--- hw/i2c/esp32_i2c.c
++++ hw/i2c/esp32_i2c.c
+@@ -4,6 +4,7 @@
+ #include "qemu/error-report.h"
+ #include "hw/i2c/esp32_i2c.h"
+ #include "hw/irq.h"
++#include "hw/qdev-properties.h"
+ 
+ static void esp32_i2c_do_transaction(Esp32I2CState * s);
+ static void esp32_i2c_update_irq(Esp32I2CState * s);
+@@ -178,6 +179,15 @@
+     for (int i_cmd = 0; i_cmd < ESP32_I2C_CMD_COUNT && !stop_or_end; ++i_cmd) {
+         uint32_t cmd = s->cmd_reg[i_cmd];
+         char opcode = FIELD_EX32(cmd, I2C_CMD, OPCODE);
++
++        /* The i2c v2 (ESP32-C3) command map swaps READ and STOP. */
++        if (s->riscv_cmd_encoding) {
++            if (opcode == I2C_OPCODE_READ_C3) {
++                opcode = I2C_OPCODE_READ;
++            } else if (opcode == I2C_OPCODE_STOP_C3) {
++                opcode = I2C_OPCODE_STOP;
++            }
++        }
+         switch (opcode) {
+             case I2C_OPCODE_RSTART:
+             case I2C_OPCODE_RSTART_C3:
+@@ -262,10 +272,20 @@
+     fifo8_create(&s->rx_fifo, ESP32_I2C_FIFO_LENGTH);
+ }
+ 
++static Property esp32_i2c_properties[] = {
++    /* Select the i2c v2 command encoding used by the RISC-V parts (ESP32-C3):
++     * READ=3 and STOP=2 instead of the Xtensa map READ=2, STOP=3. */
++    DEFINE_PROP_BOOL("riscv-cmd-encoding", Esp32I2CState, riscv_cmd_encoding, false),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
+ static void esp32_i2c_class_init(ObjectClass * klass, void * data)
+ {
++    DeviceClass *dc = DEVICE_CLASS(klass);
+     ResettableClass *rc = RESETTABLE_CLASS(klass);
++
+     rc->phases.hold = esp32_i2c_reset_hold;
++    device_class_set_props(dc, esp32_i2c_properties);
+ }
+ 
+ static const TypeInfo esp32_i2c_type_info = {
+--- hw/riscv/esp32c3.c
++++ hw/riscv/esp32c3.c
+@@ -569,6 +569,9 @@
+      * used to fail with ESP_ERR_INVALID_STATE. Wiring it is the Q0 prototype that
+      * proves the interrupt-matrix input path works for peripheral models. */
+     {
++        /* i2c v2 command encoding: this controller reads READ=3, STOP=2, not
++         * the Xtensa map READ=2, STOP=3 (soc/esp32c3 i2c_ll.h). */
++        qdev_prop_set_bit(DEVICE(&ms->i2c), "riscv-cmd-encoding", true);
+         sysbus_realize(SYS_BUS_DEVICE(&ms->i2c), &error_fatal);
+         MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->i2c), 0);
+         memory_region_add_subregion_overlap(sys_mem, DR_REG_I2C_EXT_BASE, mr, 0);

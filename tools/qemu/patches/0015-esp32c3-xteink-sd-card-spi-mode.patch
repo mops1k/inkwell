@@ -1,0 +1,15 @@
+--- hw/riscv/esp32c3.c
++++ hw/riscv/esp32c3.c
+@@ -334,7 +334,11 @@
+     /* The card itself; -drive if=sd supplies the image, otherwise the card is
+      * present but empty, which is enough to get past card identification. */
+     dinfo = drive_get(IF_SD, 0, 0);
+-    card = qdev_new(TYPE_SD_CARD);
++    /* SPI mode, not the native 4-bit protocol: ssi-sd speaks SPI, and only the
++     * SPI protocol table answers CMD0 with R1 = idle. With TYPE_SD_CARD the
++     * native protocol returns "no response" for CMD0, ssi-sd translates that
++     * into R1 = 0x04 (illegal command) and SdFat loops on CMD0 forever. */
++    card = qdev_new(TYPE_SD_CARD_SPI);
+     if (dinfo) {
+         qdev_prop_set_drive_err(card, "drive", blk_by_legacy_dinfo(dinfo),
+                                 &error_fatal);

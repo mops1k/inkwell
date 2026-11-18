@@ -2,6 +2,7 @@
 
 #include <HalStorage.h>
 #include <Logging.h>
+#include <strings.h>  // strcasecmp: the card filesystem is case-insensitive
 
 #include <algorithm>
 #include <cstring>
@@ -15,6 +16,10 @@ namespace shelf {
 namespace {
 
 bool isHiddenName(const char* name) { return name[0] == '.' || name[0] == '\0'; }
+
+// Upstream HalSystem drops its crash log at the card root. It is a diagnostic
+// file, not a book, and used to show up on the shelf as a TXT "book".
+bool isSkippedFileName(const char* name) { return strcasecmp(name, "crash_report.txt") == 0; }
 
 // Caches (/.crosspoint), hidden folders and OS bookkeeping are never books.
 bool isSkippedDirectory(const char* name) {
@@ -68,7 +73,7 @@ void ShelfIndexer::walkDirectory(WalkState& state, const std::string& dir, uint1
       continue;
     }
 
-    if (isHiddenName(name)) continue;
+    if (isHiddenName(name) || isSkippedFileName(name)) continue;
     const std::string path = joinPath(dir, name);
     const BookFormat format = detectBookFormat(path);
     if (format == BookFormat::Unknown) continue;

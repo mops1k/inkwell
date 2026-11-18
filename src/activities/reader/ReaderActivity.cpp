@@ -914,7 +914,7 @@ void ReaderActivity::onEnter() {
     // already lost its inflate ring and produced 0 TOC entries. Lend the buffer out for the build
     // (the popup above is drawn BEFORE the release — drawPopup needs the active buffer — and
     // load() performs no rendering) and restore it before the reader activity starts. Same
-    // pattern as HomeActivity cover loading. If the realloc fails, EpubReaderActivity::onEnter
+    // pattern as library cover loading. If the realloc fails, EpubReaderActivity::onEnter
     // sees the missing buffer (secondaryBufferDegraded_) and recovers once heap allows.
     bool releasedForIndexing = false;
     if (firstOpenIndexing && renderer.hasSecondaryBuffer()) {

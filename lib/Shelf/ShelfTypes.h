@@ -23,6 +23,11 @@ enum class BookFormat : uint8_t {
 const char* bookFormatName(BookFormat format);
 BookFormat bookFormatFromName(std::string_view name);
 
+// Upper-case badge/menu label ("EPUB", "FB2", …); empty for Unknown. This is the
+// same string the cover chip draws and the format filter collects, so the two
+// can never drift apart.
+const char* bookFormatLabel(BookFormat format);
+
 // Metadata shown on the shelf. Fields are optional: every supported container
 // can lack some of them (FB2 without <lang>, EPUB without <dc:series>, …).
 struct BookMeta {
@@ -32,6 +37,9 @@ struct BookMeta {
   std::string seriesIndex;
   std::string language;
   std::string genre;  // first genre/subject; drives the shelf's genre filter
+  // Short blurb for the book card: EPUB <dc:description>, FB2 <annotation>.
+  // Empty when the file has none — the card then simply omits the section.
+  std::string description;
 };
 
 // One indexed file. `path` is the absolute SD path and stays the book identity

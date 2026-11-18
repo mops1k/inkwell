@@ -1,5 +1,5 @@
---- hw/i2c/meson.build	2026-11-09 17:14:34.000000000 +0300
-+++ /home/mops1k/Development/xteink-shelf/.venv/qemu/src/hw/i2c/meson.build	2026-11-18 16:52:12.902569159 +0300
+--- hw/i2c/meson.build
++++ hw/i2c/meson.build
 @@ -16,6 +16,7 @@
  i2c_ss.add(when: 'CONFIG_OMAP', if_true: files('omap_i2c.c'))
  i2c_ss.add(when: 'CONFIG_PPC4XX', if_true: files('ppc4xx_i2c.c'))

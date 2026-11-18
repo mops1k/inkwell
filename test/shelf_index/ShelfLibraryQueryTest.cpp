@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -134,8 +135,32 @@ TEST(LibraryQuery, SortsByLastOpened) {
   EXPECT_EQ("Анна Каренина", index.books[out[0]].meta.title);
 }
 
+// Hidden books leave the grid, the filter values and the series walk, but keep
+// their index entry so unhiding needs no rescan.
+TEST(LibraryQuery, HiddenBooksAreExcluded) {
+  shelf::ShelfIndex index = makeIndex();
+  shelf::LibraryQuery query;
+  query.hiddenPaths = {"/books/b.epub"};
+
+  std::vector<uint16_t> out;
+  query.apply(index, out);
+  ASSERT_EQ(out.size(), index.books.size() - 1);
+  for (const uint16_t id : out) {
+    EXPECT_NE(index.books[id].path, "/books/b.epub");
+  }
+
+  std::vector<std::string> values;
+  query.collectValues(index, shelf::FilterField::Author, values);
+  EXPECT_EQ(std::find(values.begin(), values.end(), "Достоевский"), values.end());
+
+  // The untrimmed overload still sees every book.
+  shelf::collectValues(index, shelf::FilterField::Author, values);
+  EXPECT_NE(std::find(values.begin(), values.end(), "Достоевский"), values.end());
+}
+
 TEST(LibraryQuery, NamesRoundTrip) {
-  for (const auto field : {shelf::FilterField::Author, shelf::FilterField::Series, shelf::FilterField::Genre}) {
+  for (const auto field : {shelf::FilterField::Author, shelf::FilterField::Series, shelf::FilterField::Genre,
+                           shelf::FilterField::Format}) {
     EXPECT_EQ(field, shelf::filterFieldFromName(shelf::filterFieldName(field)));
   }
   EXPECT_EQ(shelf::FilterField::None, shelf::filterFieldFromName("nonsense"));
@@ -143,4 +168,57 @@ TEST(LibraryQuery, NamesRoundTrip) {
     EXPECT_EQ(key, shelf::sortKeyFromName(shelf::sortKeyName(key)));
   }
   EXPECT_EQ(shelf::SortKey::Title, shelf::sortKeyFromName("nonsense"));
+}
+
+// Reading order inside a series: decimal <sequence number> first, unnumbered
+// books last, ties by title. The card's Left/Right uses exactly this order.
+TEST(LibraryQuery, OrdersSeriesBooksByNumber) {
+  shelf::ShelfIndex index;
+  const auto book = [](const char* path, const char* title, const char* number) {
+    shelf::ShelfBook b;
+    b.path = path;
+    b.meta.title = title;
+    b.meta.series = "Цикл";
+    b.meta.seriesIndex = number;
+    b.metaOk = true;
+    return b;
+  };
+  index.books.push_back(book("/b/three.fb2", "Третья", "3"));
+  index.books.push_back(book("/b/one.fb2", "Первая", "1"));
+  index.books.push_back(book("/b/extra.fb2", "Вне цикла", ""));
+  index.books.push_back(book("/b/two.fb2", "Вторая", "2"));
+  index.books.push_back(book("/b/other.fb2", "Чужое", ""));
+  index.books.back().meta.series = "Другая";
+
+  std::vector<uint16_t> out;
+  shelf::collectSeriesBooks(index, "Цикл", out);
+  ASSERT_EQ(out.size(), 4u);
+  EXPECT_EQ(index.books[out[0]].path, "/b/one.fb2");
+  EXPECT_EQ(index.books[out[1]].path, "/b/two.fb2");
+  EXPECT_EQ(index.books[out[2]].path, "/b/three.fb2");
+  EXPECT_EQ(index.books[out[3]].path, "/b/extra.fb2");
+
+  shelf::collectSeriesBooks(index, "", out);
+  EXPECT_TRUE(out.empty());
+}
+TEST(LibraryQuery, FiltersByFormatLabel) {
+  shelf::ShelfIndex index = makeIndex();
+  index.books[0].format = shelf::BookFormat::Epub;
+  index.books[1].format = shelf::BookFormat::Epub;
+  index.books[2].format = shelf::BookFormat::Fb2;
+  index.books[3].format = shelf::BookFormat::Txt;
+
+  shelf::LibraryQuery query;
+  query.filter = {shelf::FilterField::Format, "FB2"};
+  std::vector<uint16_t> out;
+  query.apply(index, out);
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(index.books[out[0]].path, "/books/c.epub");
+
+  std::vector<std::string> values;
+  shelf::collectValues(index, shelf::FilterField::Format, values);
+  ASSERT_EQ(values.size(), 3u);
+  EXPECT_EQ(values[0], "EPUB");
+  EXPECT_EQ(values[1], "FB2");
+  EXPECT_EQ(values[2], "TXT");
 }

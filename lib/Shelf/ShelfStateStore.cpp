@@ -50,6 +50,7 @@ class StateReader {
     state.filter.value = value;
     if (!state.filter.active()) state.filter.clear();  // a field without a value is "all books"
     state.sort = sortKeyFromName(sortName);
+    state.hiddenPaths = std::move(hiddenPaths);
     target = std::move(state);
     return true;
   }
@@ -72,10 +73,23 @@ class StateReader {
     if (self->depth == 1) self->rootClosed = true;
     if (self->depth > 0) self->depth--;
   }
-  static void arrayStartTrampoline(void* ctx) { static_cast<StateReader*>(ctx)->depth++; }
-  static void arrayEndTrampoline(void* ctx) { static_cast<StateReader*>(ctx)->depth--; }
+  static void arrayStartTrampoline(void* ctx) {
+    auto* self = static_cast<StateReader*>(ctx);
+    // "hidden": [ "path", ... ] — the only array in the document, at root level.
+    if (self->depth == 1 && self->key == "hidden") self->inHiddenArray = true;
+    self->depth++;
+  }
+  static void arrayEndTrampoline(void* ctx) {
+    auto* self = static_cast<StateReader*>(ctx);
+    if (self->depth > 0) self->depth--;
+    if (self->inHiddenArray && self->depth == 1) self->inHiddenArray = false;
+  }
 
   void handleString(const char* text, size_t len) {
+    if (inHiddenArray && depth == 2) {
+      hiddenPaths.emplace_back(text, len);
+      return;
+    }
     if (depth != 1) return;
     if (key == "field")
       fieldName.assign(text, len);
@@ -100,10 +114,12 @@ class StateReader {
   std::string fieldName;
   std::string value;
   std::string sortName;
+  std::vector<std::string> hiddenPaths;
   int depth = 0;
   int version = -1;
   bool sawVersion = false;
   bool rootClosed = false;
+  bool inHiddenArray = false;
 };
 
 std::string dirOf(const std::string& file) {
@@ -126,6 +142,12 @@ void serializeLibraryState(const LibraryState& state, std::string& out) {
   appendEscaped(out, state.filter.active() ? state.filter.value : std::string_view{});
   out += ",\"sort\":";
   appendEscaped(out, sortKeyName(state.sort));
+  out += ",\"hidden\":[";
+  for (size_t i = 0; i < state.hiddenPaths.size(); ++i) {
+    if (i > 0) out.push_back(',');
+    appendEscaped(out, state.hiddenPaths[i]);
+  }
+  out += "]";
   out += "}\n";
 }
 

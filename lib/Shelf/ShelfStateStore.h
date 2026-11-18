@@ -1,17 +1,19 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "LibraryQuery.h"
 
 namespace shelf {
 
-// What the shelf screen remembers between boots: the active filter and the
-// sort order. Kept apart from books.json — a rescan rewrites the index, while
-// the user's library view must survive it.
+// What the shelf screen remembers between boots: the active filter, the sort
+// order and the books the user hid. Kept apart from books.json — a rescan
+// rewrites the index, while the user's library view must survive it.
 struct LibraryState {
   LibraryFilter filter;
   SortKey sort = SortKey::Title;
+  std::vector<std::string> hiddenPaths;
 };
 
 // Same crash-safe pattern as ShelfIndexStore (AGENTS.md: ".tmp + rename,

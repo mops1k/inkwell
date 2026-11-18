@@ -41,8 +41,19 @@ bool scanFb2File(const std::string& path, BookMeta& out) {
   out.title = result.metadata.title;
   out.author = result.metadata.author;
   out.language = result.metadata.language;
-  out.genre = result.metadata.genre;
+  // The scanner keeps the raw <genre> text, which in real books is a whitespace
+  // padded block with several genres on separate lines. The shelf shows one
+  // genre and filters by it, so keep the first meaningful line only.
+  std::string genre;
+  for (const char ch : result.metadata.genre) {
+    if (ch == '\n' || ch == '\r') break;
+    genre.push_back(ch);
+  }
+  const size_t first = genre.find_first_not_of(" \t");
+  const size_t last = genre.find_last_not_of(" \t");
+  out.genre = first == std::string::npos ? std::string() : genre.substr(first, last - first + 1);
   out.series = result.metadata.sequenceName;
+  out.description = result.metadata.annotationText;
   if (result.metadata.sequenceNumber != 0) out.seriesIndex = std::to_string(result.metadata.sequenceNumber);
   return !out.title.empty();
 }
@@ -64,9 +75,29 @@ bool scanWithEncoding(const std::string& path, BookMeta& out) {
 }
 
 bool scanFb2Zip(const std::string& path, BookMeta& out) {
-  // The XML scanner needs random seeks (see lib/Fb2/native/Fb2ZipOpener.h), so
-  // the single entry is staged to a scratch file first. Unlike Fb2::load() this
-  // writes nothing into the book cache.
+  std::string scratch;
+  bool temporary = false;
+  if (!openFb2XmlForScan(path, BookFormat::Fb2Zip, scratch, temporary)) return false;
+  BookMeta staged;
+  // The transcode pass reads the staged XML and may write its own scratch copy; the
+  // staged archive entry itself is temporary and removed by the caller.
+  const bool ok = scanWithEncoding(scratch, staged);
+  if (temporary) Storage.remove(scratch.c_str());
+  if (!ok) return false;
+  out = staged;
+  return true;
+}
+
+}  // namespace
+
+bool openFb2XmlForScan(const std::string& path, BookFormat format, std::string& xmlPath, bool& temporary) {
+  xmlPath = path;
+  temporary = false;
+  if (format != BookFormat::Fb2Zip) return format == BookFormat::Fb2;
+
+  // The XML scanner needs random seeks (see lib/Fb2/native/Fb2ZipOpener.h), so the
+  // single entry is staged to a scratch file first. Unlike Fb2::load() this writes
+  // nothing into the book cache.
   const std::string scratch = scratchBase(path) + ".zip.fb2";
   Storage.remove(scratch.c_str());
 
@@ -91,13 +122,10 @@ bool scanFb2Zip(const std::string& path, BookMeta& out) {
     Storage.remove(scratch.c_str());
     return false;
   }
-
-  const bool ok = scanWithEncoding(scratch, out);
-  Storage.remove(scratch.c_str());
-  return ok;
+  xmlPath = scratch;
+  temporary = true;
+  return true;
 }
-
-}  // namespace
 
 bool readFb2Metadata(const std::string& path, BookFormat format, BookMeta& out) {
   switch (format) {

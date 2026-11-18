@@ -1,0 +1,33 @@
+--- hw/ssi/esp32c3_gpspi.c
++++ hw/ssi/esp32c3_gpspi.c
+@@ -132,11 +132,14 @@
+     if (s->user & GPSPI_USER_USR_DUMMY) {
+         dummy_bits = (s->user1 & 0xff) + 1;
+     }
+-    if (s->user & GPSPI_USER_USR_MOSI) {
+-        mosi_bits = (s->ms_dlen & 0x3ff) + 1;
+-    }
+-    if (s->user & GPSPI_USER_USR_MISO) {
+-        miso_bits = ((s->ms_dlen >> 10) & 0x3ff) + 1;
++    /* ESP32-C3 has a single data-length field: SPI_MS_DATA_BITLEN [17:0] gives
++     * the bit length clocked out on MOSI and in on MISO (CPU-driven transfer).
++     * The classic ESP32 map with separate MOSI [9:0] and MISO [19:10] fields
++     * does not exist here: decoding ms_dlen that way asks for a one-bit MISO
++     * read, so every SD R1 response arrives as 0x00 and card init never
++     * completes. */
++    if (s->user & (GPSPI_USER_USR_MOSI | GPSPI_USER_USR_MISO)) {
++        mosi_bits = miso_bits = (s->ms_dlen & 0x3ffff) + 1;
+     }
+ 
+     if (cmd_bits) {
+@@ -151,8 +154,8 @@
+         s->bytes++;
+     }
+ 
+-    mosi_bytes = (mosi_bits + 7) / 8;
+-    miso_bytes = (miso_bits + 7) / 8;
++    mosi_bytes = (s->user & GPSPI_USER_USR_MOSI) ? (mosi_bits + 7) / 8 : 0;
++    miso_bytes = (s->user & GPSPI_USER_USR_MISO) ? (miso_bits + 7) / 8 : 0;
+     data_bytes = MAX(mosi_bytes, miso_bytes);
+     if (data_bytes > GPSPI_FIFO_WORDS * 4) {
+         /* The CPU-driven path only ever fills the 64-byte FIFO. */

@@ -1,0 +1,319 @@
+--- include/hw/display/xteink_uc8253.h
++++ include/hw/display/xteink_uc8253.h
+@@ -34,16 +34,31 @@
+  * "new"); keep both so a dump can be diffed the way the panel diffs them. */
+ #define XTEINK_UC8253_PLANE_DTM1  0
+ #define XTEINK_UC8253_PLANE_DTM2  1
+-#define XTEINK_UC8253_PLANES      2
++
++/* What the panel actually shows, composed from the BW picture and the optional
++ * 4-level grayscale pass (Q7). Two 1-bit planes, level = 2*MSB + LSB:
++ * 0 = paper, 1 = light gray, 2 = dark gray, 3 = black. A BW refresh simply
++ * inverts DTM2 into both, a 4-level refresh nudges the displayed page with the
++ * grayscale RAM pair (see xteink_uc8253.c). */
++#define XTEINK_UC8253_PLANE_SCREEN_MSB 2
++#define XTEINK_UC8253_PLANE_SCREEN_LSB 3
++#define XTEINK_UC8253_PLANES      4
+ 
+ /* Frame-dump record written to the "chardev" backend on every DISPLAY_REFRESH.
+- * Little endian, 32-byte header followed by both planes in arrival order (row 0
+- * is the LAST gate line: the driver streams a frame bottom-up, see
+- * EpdBus::sendPlaneFlipped). tools/qemu/panel-frame.py parses it. */
++ * Little endian, 32-byte header followed by all planes in this order: DTM1,
++ * DTM2, screen MSB, screen LSB (row 0 is the LAST gate line: the driver streams
++ * a frame bottom-up, see EpdBus::sendPlaneFlipped). The DTM planes are the RAM
++ * as received (1 = white in the BW coding); the screen planes are the 2-bit
++ * picture, so a renderer has something to draw even while the RAM holds a
++ * grayscale code. tools/qemu/panel-frame.py parses it. */
+ #define XTEINK_UC8253_FRAME_MAGIC   0x4e503358u   /* "X3PN" */
+-#define XTEINK_UC8253_FRAME_VERSION 1
++#define XTEINK_UC8253_FRAME_VERSION 2
+ #define XTEINK_UC8253_FRAME_HDR     32
+ 
++/* Record flags. */
++#define XTEINK_UC8253_FRAME_FLAG_BOTTOM_UP 0x1u  /* rows are in gate order */
++#define XTEINK_UC8253_FRAME_FLAG_GRAY4     0x2u  /* refresh was a 4-level pass */
++
+ typedef struct XteinkUc8253State {
+     SSIPeripheral parent_obj;
+ 
+@@ -62,11 +77,26 @@
+     uint32_t commands;      /* commands latched since reset */
+     uint32_t bytes;         /* data bytes traced since reset */
+ 
+-    /* Frame RAM, filled byte by byte from the data phase of DTM1/DTM2. */
++    /* Frame RAM, filled byte by byte from the data phase of DTM1/DTM2, plus the
++     * two screen planes the dump reports (Q7). */
+     uint8_t *plane[XTEINK_UC8253_PLANES];
+     int plane_idx;          /* plane currently receiving data, -1 = none */
+     uint32_t plane_pos;
+ 
++    /* Plane-payload bookkeeping, so DISPLAY_REFRESH can tell a BW picture from
++     * the 4-level grayscale RAM pair: the grayscale pass writes the LSB plane to
++     * DTM1 and right after it (a DATA_STOP apart) the MSB plane to DTM2, then
++     * refreshes. No BW pass leaves that tail -- a fast/half sync only writes
++     * DTM2, a full sync starts from a constant 0xFF fill of DTM1, and every
++     * baseline sync that follows a refresh has a bank load in between. */
++    bool payload_same;      /* current payload is one repeated byte */
++    uint8_t payload_first;  /* that byte */
++    bool pipe_dtm1_ready;   /* a DTM1 payload just ended, nothing in between */
++    bool pipe_dtm1_fill;    /* ... and it was the constant 0xFF baseline fill */
++    bool dtm2_after_dtm1;   /* the DTM2 payload being received follows that DTM1 */
++    bool last_dtm2_after_dtm1; /* same, for the last completed DTM2 payload */
++    bool frame_gray4;       /* the last refresh was a 4-level pass */
++
+     /* Every DISPLAY_REFRESH emits one record to the chardev (if configured). */
+     CharBackend chr;
+     uint32_t frames;
+--- hw/display/xteink_uc8253.c
++++ hw/display/xteink_uc8253.c
+@@ -8,11 +8,18 @@
+  * then for the line to come back HIGH, so the model must actively drive BUSY —
+  * an undriven (floating) line makes the wait spin until its timeout.
+  *
+- * The model also keeps the two frame RAM planes (DTM1 0x10 / DTM2 0x13) and, on
++ * The model also keeps both frame RAM planes (DTM1 0x10 / DTM2 0x13) and, on
+  * every DISPLAY_REFRESH (0x12), writes one frame record to an optional chardev.
+  * tools/qemu/panel-frame.py turns that record into a PNG, which is how Q4 proves
+  * what the firmware actually painted.
+  *
++ * Q7: the reader paints with a 4-level (2 bits per pixel) pass, where the two
++ * RAM planes are a gray code rather than a picture: the LSB plane goes to DTM1,
++ * the MSB plane to DTM2, and the pass only *nudges* the BW page that is already
++ * on the panel. A record therefore also carries the composed screen (2 bits per
++ * pixel, "what the panel shows"), so the frame is the readable page instead of
++ * the code in RAM.
++ *
+  * Copyright (c) 2026 xteink-shelf fork
+  *
+  * This program is free software; you can redistribute it and/or modify
+@@ -78,7 +85,8 @@
+     return value && *value && strcmp(value, "0") != 0;
+ }
+ 
+-/* One record per DISPLAY_REFRESH: a fixed header plus both RAM planes. */
++/* One record per DISPLAY_REFRESH: a fixed header plus every plane (both RAM
++ * planes and the composed screen, see the header for the layout). */
+ static void xteink_uc8253_dump_frame(XteinkUc8253State *s)
+ {
+     uint8_t header[XTEINK_UC8253_FRAME_HDR];
+@@ -89,7 +97,8 @@
+         XTEINK_UC8253_HEIGHT,
+         XTEINK_UC8253_STRIDE,
+         XTEINK_UC8253_PLANES,
+-        1,              /* flags: bit0 = rows are in gate order (bottom-up) */
++        XTEINK_UC8253_FRAME_FLAG_BOTTOM_UP |
++            (s->frame_gray4 ? XTEINK_UC8253_FRAME_FLAG_GRAY4 : 0),
+         s->frames,
+     };
+     int i, plane;
+@@ -108,13 +117,114 @@
+     }
+ 
+     if (s->trace_commands) {
+-        info_report("[UC8253] frame #%u dumped (%dx%d, %u bytes/plane)",
++        info_report("[UC8253] frame #%u dumped (%dx%d, %u bytes/plane, %s)",
+                     s->frames, XTEINK_UC8253_WIDTH, XTEINK_UC8253_HEIGHT,
+-                    XTEINK_UC8253_PLANE_SIZE);
++                    XTEINK_UC8253_PLANE_SIZE,
++                    s->frame_gray4 ? "4-level gray" : "1-bit BW");
+     }
+     s->frames++;
+ }
+ 
++/* The grayscale pass of the driver (Uc8253X3Driver::copyGrayscaleLsb/Msb) writes
++ * the LSB plane to DTM1 and the MSB plane to DTM2 with only a DATA_STOP in
++ * between, then refreshes. No BW pass leaves that tail: a fast/half sync only
++ * writes DTM2, a full sync starts from a constant 0xFF fill of DTM1, and the
++ * baseline syncs that follow a refresh are separated from the next DTM2 by the
++ * LUT bank load. The two DTM planes are therefore a 4-level code, not a picture
++ * plus its previous frame. */
++static bool xteink_uc8253_gray4_refresh(XteinkUc8253State *s)
++{
++    return s->last_dtm2_after_dtm1;
++}
++
++/* Close the plane payload that just ended (called before every command, so the
++ * payload of DTM1/DTM2 is complete even when the next command is the refresh). */
++static void xteink_uc8253_close_payload(XteinkUc8253State *s)
++{
++    if (s->plane_idx < 0 || s->plane_pos == 0) {
++        return;
++    }
++    if (s->plane_idx == XTEINK_UC8253_PLANE_DTM1) {
++        /* A full BW sync starts from a constant 0xFF (white) fill of DTM1; that
++         * is a baseline, not a picture, and must not read as a gray LSB plane. */
++        s->pipe_dtm1_ready = true;
++        s->pipe_dtm1_fill = s->payload_same && s->payload_first == 0xff;
++    } else {
++        s->last_dtm2_after_dtm1 = s->dtm2_after_dtm1;
++        s->dtm2_after_dtm1 = false;
++        s->pipe_dtm1_ready = false;
++    }
++}
++
++/* Compose what the panel shows from a refresh.
++ *
++ * BW refresh: the new picture is in DTM2 (1 = white, 0 = black), so the whole
++ * screen becomes that picture.
++ *
++ * 4-level refresh: the RAM pair is a code, not a picture -- (MSB,LSB) = (0,0)
++ * leaves the pixel as the BW pass drew it, (1,0) lightens it to light gray,
++ * (0,1) to dark gray and (1,1) keeps it black. The page the user is reading is
++ * the BW picture underneath, which is exactly what the driver relies on
++ * (Uc8253X3Driver::displayGray "nudges" the frame already on the panel). */
++static void xteink_uc8253_update_screen(XteinkUc8253State *s)
++{
++    const uint8_t *dtm1 = s->plane[XTEINK_UC8253_PLANE_DTM1];
++    const uint8_t *dtm2 = s->plane[XTEINK_UC8253_PLANE_DTM2];
++    uint8_t *scr_msb = s->plane[XTEINK_UC8253_PLANE_SCREEN_MSB];
++    uint8_t *scr_lsb = s->plane[XTEINK_UC8253_PLANE_SCREEN_LSB];
++    uint32_t i;
++
++    s->frame_gray4 = xteink_uc8253_gray4_refresh(s);
++    /* A refresh consumes the RAM pair: the next one needs its own DTM2 payload,
++     * so a later windowed refresh without plane data does not inherit it. */
++    s->last_dtm2_after_dtm1 = false;
++
++    if (!s->frame_gray4) {
++        for (i = 0; i < XTEINK_UC8253_PLANE_SIZE; i++) {
++            /* White -> level 0, black -> level 3. */
++            uint8_t ink = (uint8_t)~dtm2[i];
++
++            scr_msb[i] = ink;
++            scr_lsb[i] = ink;
++        }
++        return;
++    }
++
++    for (i = 0; i < XTEINK_UC8253_PLANE_SIZE; i++) {
++        uint8_t msb = dtm2[i];
++        uint8_t lsb = dtm1[i];
++        uint8_t out_msb, out_lsb;
++        int bit;
++
++        if (!msb && !lsb) {
++            continue;   /* code (0,0) everywhere in this byte: page unchanged */
++        }
++        out_msb = scr_msb[i];
++        out_lsb = scr_lsb[i];
++        for (bit = 7; bit >= 0; bit--) {
++            unsigned code = (((msb >> bit) & 1u) << 1) | ((lsb >> bit) & 1u);
++            unsigned level;
++
++            if (code == 0) {
++                continue;
++            }
++            level = (code == 2) ? 1 : (code == 1) ? 2 : 3;
++            if (level & 2) {
++                out_msb |= (uint8_t)(1u << bit);
++            } else {
++                out_msb &= (uint8_t)~(1u << bit);
++            }
++            if (level & 1) {
++                out_lsb |= (uint8_t)(1u << bit);
++            } else {
++                out_lsb &= (uint8_t)~(1u << bit);
++            }
++        }
++        scr_msb[i] = out_msb;
++        scr_lsb[i] = out_lsb;
++    }
++}
++
+ static void xteink_uc8253_busy_timer(void *opaque)
+ {
+     XteinkUc8253State *s = XTEINK_UC8253(opaque);
+@@ -142,6 +252,16 @@
+ 
+ static void xteink_uc8253_command(XteinkUc8253State *s, uint8_t cmd)
+ {
++    /* The previous DTM payload ends with this command byte, so remember it
++     * before the state machine moves on. */
++    xteink_uc8253_close_payload(s);
++
++    /* A DTM1 payload only counts as the LSB plane when the DTM2 command comes
++     * straight after it; any other command in between breaks the pairing. */
++    if (cmd != UC8253_CMD_DTM2 && cmd != UC8253_CMD_DATA_STOP) {
++        s->pipe_dtm1_ready = false;
++    }
++
+     s->cmd = cmd;
+     s->commands++;
+ 
+@@ -155,10 +275,16 @@
+     case UC8253_CMD_DTM1:
+         s->plane_idx = XTEINK_UC8253_PLANE_DTM1;
+         s->plane_pos = 0;
++        s->payload_same = true;
++        s->payload_first = 0;
+         break;
+     case UC8253_CMD_DTM2:
++        s->dtm2_after_dtm1 = s->pipe_dtm1_ready && !s->pipe_dtm1_fill;
++        s->pipe_dtm1_ready = false;
+         s->plane_idx = XTEINK_UC8253_PLANE_DTM2;
+         s->plane_pos = 0;
++        s->payload_same = true;
++        s->payload_first = 0;
+         break;
+     case UC8253_CMD_DATA_STOP:
+         s->plane_idx = -1;
+@@ -167,6 +293,7 @@
+         xteink_uc8253_set_busy(s, s->busy_ms_pon, "PON");
+         break;
+     case UC8253_CMD_DISPLAY_REFRESH:
++        xteink_uc8253_update_screen(s);
+         xteink_uc8253_dump_frame(s);
+         xteink_uc8253_set_busy(s, s->busy_ms_drf, "DRF");
+         break;
+@@ -193,6 +320,12 @@
+         /* Data bytes belong to a RAM plane only while DTM1/DTM2 is open; the
+          * parameter payloads of every other command are dropped. */
+         if (s->plane_idx >= 0 && s->plane_pos < XTEINK_UC8253_PLANE_SIZE) {
++            if (s->plane_pos == 0) {
++                s->payload_first = byte;
++                s->payload_same = true;
++            } else if (byte != s->payload_first) {
++                s->payload_same = false;
++            }
+             s->plane[s->plane_idx][s->plane_pos++] = byte;
+         }
+         if (s->trace_bytes && s->bytes < 4000) {
+@@ -228,7 +361,8 @@
+     XteinkUc8253State *s = XTEINK_UC8253(opaque);
+ 
+     /* Reset is active low; a pulse puts the controller back to its power-on
+-     * state, which is idle (BUSY high) with both RAM planes cleared. */
++     * state, which is idle (BUSY high) with all RAM planes cleared. The screen
++     * planes hold "level 0" (paper) when cleared, which is the blank panel. */
+     if (!level && s->rst) {
+         int plane;
+ 
+@@ -236,6 +370,13 @@
+         s->data_bytes = 0;
+         s->plane_idx = -1;
+         s->plane_pos = 0;
++        s->payload_same = true;
++        s->payload_first = 0;
++        s->pipe_dtm1_ready = false;
++        s->pipe_dtm1_fill = false;
++        s->dtm2_after_dtm1 = false;
++        s->last_dtm2_after_dtm1 = false;
++        s->frame_gray4 = false;
+         for (plane = 0; plane < XTEINK_UC8253_PLANES; plane++) {
+             memset(s->plane[plane], 0, XTEINK_UC8253_PLANE_SIZE);
+         }
+@@ -263,6 +404,13 @@
+     }
+     s->plane_idx = -1;
+     s->plane_pos = 0;
++    s->payload_same = true;
++    s->payload_first = 0;
++    s->pipe_dtm1_ready = false;
++    s->pipe_dtm1_fill = false;
++    s->dtm2_after_dtm1 = false;
++    s->last_dtm2_after_dtm1 = false;
++    s->frame_gray4 = false;
+     s->frames = 0;
+ 
+     s->trace_bytes = xteink_uc8253_env_flag("XTEINK_PANEL_TRACE_BYTES");

@@ -1,0 +1,387 @@
+--- include/hw/display/xteink_uc8253.h
++++ include/hw/display/xteink_uc8253.h
+@@ -10,6 +10,7 @@
+ 
+ #pragma once
+ 
++#include "chardev/char-fe.h"
+ #include "hw/ssi/ssi.h"
+ #include "hw/sysbus.h"
+ 
+@@ -22,6 +23,27 @@
+ #define XTEINK_UC8253_GPIO_RST  "rst"   /* in:  reset, active low      */
+ #define XTEINK_UC8253_GPIO_BUSY "busy"  /* out: 0 = busy, 1 = idle     */
+ 
++/* Panel RAM geometry of the X3 profile: 792x528, 1 bit per pixel, rows packed
++ * MSB first (the driver's framebuffer layout). */
++#define XTEINK_UC8253_WIDTH       792
++#define XTEINK_UC8253_HEIGHT      528
++#define XTEINK_UC8253_STRIDE      (XTEINK_UC8253_WIDTH / 8)                 /* 99 */
++#define XTEINK_UC8253_PLANE_SIZE  (XTEINK_UC8253_STRIDE * XTEINK_UC8253_HEIGHT) /* 52272 */
++
++/* The controller has two frame RAM planes, DTM1 (0x10, "old") and DTM2 (0x13,
++ * "new"); keep both so a dump can be diffed the way the panel diffs them. */
++#define XTEINK_UC8253_PLANE_DTM1  0
++#define XTEINK_UC8253_PLANE_DTM2  1
++#define XTEINK_UC8253_PLANES      2
++
++/* Frame-dump record written to the "chardev" backend on every DISPLAY_REFRESH.
++ * Little endian, 32-byte header followed by both planes in arrival order (row 0
++ * is the LAST gate line: the driver streams a frame bottom-up, see
++ * EpdBus::sendPlaneFlipped). tools/qemu/panel-frame.py parses it. */
++#define XTEINK_UC8253_FRAME_MAGIC   0x4e503358u   /* "X3PN" */
++#define XTEINK_UC8253_FRAME_VERSION 1
++#define XTEINK_UC8253_FRAME_HDR     32
++
+ typedef struct XteinkUc8253State {
+     SSIPeripheral parent_obj;
+ 
+@@ -32,11 +54,29 @@
+     bool cs;
+     bool busy;
+     bool trace_commands;
++    bool trace_bytes;
++    bool trace_busy;
+ 
+     uint8_t cmd;
+     uint32_t data_bytes;    /* data bytes received for the current command */
+     uint32_t commands;      /* commands latched since reset */
+-    uint32_t bytes;         /* data bytes since reset */
++    uint32_t bytes;         /* data bytes traced since reset */
++
++    /* Frame RAM, filled byte by byte from the data phase of DTM1/DTM2. */
++    uint8_t *plane[XTEINK_UC8253_PLANES];
++    int plane_idx;          /* plane currently receiving data, -1 = none */
++    uint32_t plane_pos;
++
++    /* Every DISPLAY_REFRESH emits one record to the chardev (if configured). */
++    CharBackend chr;
++    uint32_t frames;
++
++    /* BUSY pulse widths per operation, overridable with XTEINK_PANEL_BUSY_*_MS
++     * so a run can stretch or shorten them without a rebuild. */
++    uint32_t busy_ms_pon;
++    uint32_t busy_ms_drf;
++    uint32_t busy_ms_pof;
++    uint32_t busy_ms_dsl;
+ 
+     QEMUTimer *busy_timer;
+ } XteinkUc8253State;
+--- hw/display/xteink_uc8253.c
++++ hw/display/xteink_uc8253.c
+@@ -8,10 +8,10 @@
+  * then for the line to come back HIGH, so the model must actively drive BUSY —
+  * an undriven (floating) line makes the wait spin until its timeout.
+  *
+- * Q2 scope: accept commands and data, latch the command, and return BUSY to idle
+- * after a plausible delay for the commands that raise it (power on, display
+- * refresh, power off, deep sleep). No frame is rendered and no status is read
+- * back; the UC8253 driver on this board never reads from the panel.
++ * The model also keeps the two frame RAM planes (DTM1 0x10 / DTM2 0x13) and, on
++ * every DISPLAY_REFRESH (0x12), writes one frame record to an optional chardev.
++ * tools/qemu/panel-frame.py turns that record into a PNG, which is how Q4 proves
++ * what the firmware actually painted.
+  *
+  * Copyright (c) 2026 xteink-shelf fork
+  *
+@@ -21,11 +21,15 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/bswap.h"
+ #include "qemu/log.h"
+ #include "qemu/module.h"
+ #include "qemu/timer.h"
++#include "qapi/error.h"
++#include "chardev/char-fe.h"
+ #include "hw/irq.h"
+ #include "hw/qdev-properties.h"
++#include "hw/qdev-properties-system.h"
+ #include "hw/ssi/ssi.h"
+ #include "hw/display/xteink_uc8253.h"
+ #include "qemu/error-report.h"
+@@ -35,16 +39,81 @@
+ #define UC8253_CMD_POWER_ON     0x04
+ #define UC8253_CMD_DEEP_SLEEP   0x07
+ #define UC8253_CMD_DTM1         0x10
++#define UC8253_CMD_DATA_STOP    0x11
+ #define UC8253_CMD_DISPLAY_REFRESH 0x12
+ #define UC8253_CMD_DTM2         0x13
+ 
+-/* How long BUSY stays low for each operation, in milliseconds. A real panel
+- * needs hundreds of milliseconds for a refresh; the model only has to make the
+- * driver's wait terminate, so it uses a short, deterministic delay. */
+-#define UC8253_BUSY_PON_MS      5
+-#define UC8253_BUSY_DRF_MS      20
+-#define UC8253_BUSY_POF_MS      3
+-#define UC8253_BUSY_DSLP_MS     1
++/* Default BUSY pulse per operation, in milliseconds. A real UC8253 holds BUSY
++ * low for tens of milliseconds on power-on and a few hundred on a refresh; the
++ * model has to be at least as long as the driver needs to arm its completion
++ * interrupt (otherwise the edge is missed and the wait falls back to its
++ * timeout) while still keeping a boot run short. Override with
++ * XTEINK_PANEL_BUSY_PON_MS / _DRF_MS / _POF_MS / _DSL_MS. */
++#define UC8253_BUSY_PON_MS      50
++#define UC8253_BUSY_DRF_MS      300
++#define UC8253_BUSY_POF_MS      30
++#define UC8253_BUSY_DSLP_MS     5
++
++static uint32_t xteink_uc8253_env_ms(const char *name, uint32_t def)
++{
++    const char *value = getenv(name);
++    char *end = NULL;
++    unsigned long ms;
++
++    if (!value || !*value) {
++        return def;
++    }
++    ms = strtoul(value, &end, 0);
++    if (end == value || *end != '\0') {
++        info_report("[UC8253] ignoring %s=\"%s\": not a number", name, value);
++        return def;
++    }
++    return (uint32_t)ms;
++}
++
++static bool xteink_uc8253_env_flag(const char *name)
++{
++    const char *value = getenv(name);
++
++    return value && *value && strcmp(value, "0") != 0;
++}
++
++/* One record per DISPLAY_REFRESH: a fixed header plus both RAM planes. */
++static void xteink_uc8253_dump_frame(XteinkUc8253State *s)
++{
++    uint8_t header[XTEINK_UC8253_FRAME_HDR];
++    const uint32_t words[8] = {
++        XTEINK_UC8253_FRAME_MAGIC,
++        XTEINK_UC8253_FRAME_VERSION,
++        XTEINK_UC8253_WIDTH,
++        XTEINK_UC8253_HEIGHT,
++        XTEINK_UC8253_STRIDE,
++        XTEINK_UC8253_PLANES,
++        1,              /* flags: bit0 = rows are in gate order (bottom-up) */
++        s->frames,
++    };
++    int i, plane;
++
++    if (!qemu_chr_fe_backend_connected(&s->chr)) {
++        return;
++    }
++
++    for (i = 0; i < 8; i++) {
++        stl_le_p(header + i * 4, words[i]);
++    }
++    qemu_chr_fe_write_all(&s->chr, header, sizeof(header));
++    for (plane = 0; plane < XTEINK_UC8253_PLANES; plane++) {
++        qemu_chr_fe_write_all(&s->chr, s->plane[plane],
++                              XTEINK_UC8253_PLANE_SIZE);
++    }
++
++    if (s->trace_commands) {
++        info_report("[UC8253] frame #%u dumped (%dx%d, %u bytes/plane)",
++                    s->frames, XTEINK_UC8253_WIDTH, XTEINK_UC8253_HEIGHT,
++                    XTEINK_UC8253_PLANE_SIZE);
++    }
++    s->frames++;
++}
+ 
+ static void xteink_uc8253_busy_timer(void *opaque)
+ {
+@@ -52,12 +121,21 @@
+ 
+     s->busy = false;
+     qemu_set_irq(s->busy_line, 1);
++    if (s->trace_busy) {
++        info_report("[UC8253] BUSY -> 1 (idle) at %" PRId64 " ms",
++                    qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL));
++    }
+ }
+ 
+-static void xteink_uc8253_set_busy(XteinkUc8253State *s, uint32_t ms)
++static void xteink_uc8253_set_busy(XteinkUc8253State *s, uint32_t ms,
++                                   const char *what)
+ {
+     s->busy = true;
+     qemu_set_irq(s->busy_line, 0);
++    if (s->trace_busy) {
++        info_report("[UC8253] BUSY -> 0 (%s, %u ms) at %" PRId64 " ms", what, ms,
++                    qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL));
++    }
+     timer_mod(s->busy_timer,
+               qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + ms);
+ }
+@@ -65,29 +143,38 @@
+ static void xteink_uc8253_command(XteinkUc8253State *s, uint8_t cmd)
+ {
+     s->cmd = cmd;
+-    s->data_bytes = 0;
+     s->commands++;
+ 
+-    if (s->trace_commands && s->commands <= 40) {
+-        info_report("[UC8253] cmd 0x%02x (#%u)", cmd, s->commands);
++    if (s->trace_commands && s->commands <= 400) {
++        info_report("[UC8253] cmd 0x%02x (#%u, %u data bytes since last cmd)",
++                    cmd, s->commands, s->data_bytes);
+     }
++    s->data_bytes = 0;
+ 
+     switch (cmd) {
++    case UC8253_CMD_DTM1:
++        s->plane_idx = XTEINK_UC8253_PLANE_DTM1;
++        s->plane_pos = 0;
++        break;
++    case UC8253_CMD_DTM2:
++        s->plane_idx = XTEINK_UC8253_PLANE_DTM2;
++        s->plane_pos = 0;
++        break;
++    case UC8253_CMD_DATA_STOP:
++        s->plane_idx = -1;
++        break;
+     case UC8253_CMD_POWER_ON:
+-        xteink_uc8253_set_busy(s, UC8253_BUSY_PON_MS);
++        xteink_uc8253_set_busy(s, s->busy_ms_pon, "PON");
+         break;
+     case UC8253_CMD_DISPLAY_REFRESH:
+-        if (s->trace_commands) {
+-            info_report("[UC8253] refresh, %u data bytes since last cmd",
+-                        s->data_bytes);
+-        }
+-        xteink_uc8253_set_busy(s, UC8253_BUSY_DRF_MS);
++        xteink_uc8253_dump_frame(s);
++        xteink_uc8253_set_busy(s, s->busy_ms_drf, "DRF");
+         break;
+     case UC8253_CMD_POWER_OFF:
+-        xteink_uc8253_set_busy(s, UC8253_BUSY_POF_MS);
++        xteink_uc8253_set_busy(s, s->busy_ms_pof, "POF");
+         break;
+     case UC8253_CMD_DEEP_SLEEP:
+-        xteink_uc8253_set_busy(s, UC8253_BUSY_DSLP_MS);
++        xteink_uc8253_set_busy(s, s->busy_ms_dsl, "DSL");
+         break;
+     default:
+         break;
+@@ -97,17 +184,21 @@
+ static uint32_t xteink_uc8253_transfer(SSIPeripheral *dev, uint32_t val)
+ {
+     XteinkUc8253State *s = XTEINK_UC8253(dev);
+-
+-    if (s->trace_commands && s->bytes < 48) {
+-        info_report("[UC8253] byte 0x%02x dc=%d cs=%d", val & 0xff, s->dc,
+-                    s->cs);
+-    }
++    uint8_t byte = val & 0xff;
+ 
+     if (s->dc == 0) {
+-        xteink_uc8253_command(s, val & 0xff);
++        xteink_uc8253_command(s, byte);
+     } else {
+         s->data_bytes++;
+-        s->bytes++;
++        /* Data bytes belong to a RAM plane only while DTM1/DTM2 is open; the
++         * parameter payloads of every other command are dropped. */
++        if (s->plane_idx >= 0 && s->plane_pos < XTEINK_UC8253_PLANE_SIZE) {
++            s->plane[s->plane_idx][s->plane_pos++] = byte;
++        }
++        if (s->trace_bytes && s->bytes < 4000) {
++            info_report("[UC8253] byte 0x%02x dc=%d cs=%d", byte, s->dc, s->cs);
++            s->bytes++;
++        }
+     }
+ 
+     /* The panel drives nothing on MISO. */
+@@ -118,14 +209,10 @@
+ {
+     XteinkUc8253State *s = XTEINK_UC8253(dev);
+ 
+-    if (s->cs == select) {
+-        return 0;
+-    }
++    /* Chip select only frames the bytes; the command state machine spans
++     * transactions, because the driver sends DTM1/DTM2 as its own CS pulse and
++     * then streams the whole plane in a second one. */
+     s->cs = select;
+-    if (!select) {
+-        /* A new frame starts; the driver always re-sends a command first. */
+-        s->data_bytes = 0;
+-    }
+     return 0;
+ }
+ 
+@@ -141,10 +228,17 @@
+     XteinkUc8253State *s = XTEINK_UC8253(opaque);
+ 
+     /* Reset is active low; a pulse puts the controller back to its power-on
+-     * state, which is idle (BUSY high). */
++     * state, which is idle (BUSY high) with both RAM planes cleared. */
+     if (!level && s->rst) {
++        int plane;
++
+         s->cmd = 0;
+         s->data_bytes = 0;
++        s->plane_idx = -1;
++        s->plane_pos = 0;
++        for (plane = 0; plane < XTEINK_UC8253_PLANES; plane++) {
++            memset(s->plane[plane], 0, XTEINK_UC8253_PLANE_SIZE);
++        }
+         timer_del(s->busy_timer);
+         s->busy = false;
+         qemu_set_irq(s->busy_line, 1);
+@@ -155,6 +249,7 @@
+ static void xteink_uc8253_realize(SSIPeripheral *dev, Error **errp)
+ {
+     XteinkUc8253State *s = XTEINK_UC8253(dev);
++    int plane;
+ 
+     qdev_init_gpio_in_named(DEVICE(dev), xteink_uc8253_dc_handler,
+                             XTEINK_UC8253_GPIO_DC, 1);
+@@ -163,6 +258,24 @@
+     qdev_init_gpio_out_named(DEVICE(dev), &s->busy_line,
+                              XTEINK_UC8253_GPIO_BUSY, 1);
+ 
++    for (plane = 0; plane < XTEINK_UC8253_PLANES; plane++) {
++        s->plane[plane] = g_malloc0(XTEINK_UC8253_PLANE_SIZE);
++    }
++    s->plane_idx = -1;
++    s->plane_pos = 0;
++    s->frames = 0;
++
++    s->trace_bytes = xteink_uc8253_env_flag("XTEINK_PANEL_TRACE_BYTES");
++    s->trace_busy = xteink_uc8253_env_flag("XTEINK_PANEL_TRACE_BUSY");
++    s->busy_ms_pon = xteink_uc8253_env_ms("XTEINK_PANEL_BUSY_PON_MS",
++                                          UC8253_BUSY_PON_MS);
++    s->busy_ms_drf = xteink_uc8253_env_ms("XTEINK_PANEL_BUSY_DRF_MS",
++                                          UC8253_BUSY_DRF_MS);
++    s->busy_ms_pof = xteink_uc8253_env_ms("XTEINK_PANEL_BUSY_POF_MS",
++                                          UC8253_BUSY_POF_MS);
++    s->busy_ms_dsl = xteink_uc8253_env_ms("XTEINK_PANEL_BUSY_DSL_MS",
++                                          UC8253_BUSY_DSLP_MS);
++
+     s->busy_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                  xteink_uc8253_busy_timer, s);
+ 
+@@ -177,13 +290,23 @@
+ static void xteink_uc8253_unrealize(DeviceState *dev)
+ {
+     XteinkUc8253State *s = XTEINK_UC8253(dev);
++    int plane;
+ 
++    for (plane = 0; plane < XTEINK_UC8253_PLANES; plane++) {
++        g_free(s->plane[plane]);
++        s->plane[plane] = NULL;
++    }
+     timer_free(s->busy_timer);
+ }
+ 
+ static Property xteink_uc8253_properties[] = {
+     /* Log the command stream while bringing a new panel driver up. */
+     DEFINE_PROP_BOOL("trace-commands", XteinkUc8253State, trace_commands, true),
++    /* Optional frame sink: one record per DISPLAY_REFRESH, see the header. A
++     * plain file chardev collects the whole series:
++     *   -chardev file,id=xteink-panel,path=build/qemu/frame.bin
++     *   -global xteink.uc8253.chardev=xteink-panel */
++    DEFINE_PROP_CHR("chardev", XteinkUc8253State, chr),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+ 

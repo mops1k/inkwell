@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="528" height="792" viewBox="0 0 528 792">
+  <rect width="528" height="792" fill="#fff"/>
+  <rect x="16" y="40" width="248" height="330" fill="none" stroke="#000" stroke-width="2"/>
+  <text x="140" y="200" text-anchor="middle" font-family="DejaVu Sans" font-size="22" fill="#000">Личный враг Бога</text>
+  <text x="140" y="228" text-anchor="middle" font-family="DejaVu Sans" font-size="16" fill="#000">нет обложки</text>
+
+  <text x="280" y="62" font-family="DejaVu Sans" font-size="24" font-weight="bold" fill="#000">Личный враг</text>
+  <text x="280" y="90" font-family="DejaVu Sans" font-size="24" font-weight="bold" fill="#000">Бога</text>
+  <text x="280" y="118" font-family="DejaVu Sans" font-size="18" fill="#000">Кликин Михаил</text>
+  <text x="280" y="144" font-family="DejaVu Sans" font-size="17" fill="#000">Серия: #1 Личный</text>
+  <text x="280" y="166" font-family="DejaVu Sans" font-size="17" fill="#000">враг Бога</text>
+  <text x="280" y="192" font-family="DejaVu Sans" font-size="16" fill="#000">Жанр: Боевая</text>
+  <text x="280" y="212" font-family="DejaVu Sans" font-size="16" fill="#000">фантастика</text>
+
+  <rect x="280" y="228" width="170" height="14" fill="none" stroke="#000" stroke-width="1.5"/>
+  <rect x="282" y="230" width="42" height="10" fill="#000"/>
+  <text x="458" y="241" font-family="DejaVu Sans" font-size="15" fill="#000">25%</text>
+  <text x="280" y="268" font-family="DejaVu Sans" font-size="15" fill="#000">1 ч 20 мин</text>
+  <text x="280" y="290" font-family="DejaVu Sans" font-size="15" fill="#000">сегодня</text>
+  <text x="280" y="322" font-family="DejaVu Sans" font-size="15" fill="#000">2,4 МБ</text>
+
+  <line x1="16" y1="404" x2="512" y2="404" stroke="#000" stroke-width="1"/>
+  <text x="16" y="432" font-family="DejaVu Sans" font-size="16" fill="#000">Он — личный друг Бога. И это не метафора: у него есть</text>
+  <text x="16" y="454" font-family="DejaVu Sans" font-size="16" fill="#000">прямой канал связи, а у человечества — очень мало</text>
+  <text x="16" y="476" font-family="DejaVu Sans" font-size="16" fill="#000">времени, чтобы этим каналом воспользоваться.</text>
+  <text x="16" y="498" font-family="DejaVu Sans" font-size="16" fill="#000">Первая книга цикла «Личный враг Бога».</text>
+
+  <line x1="24" y1="720" x2="504" y2="720" stroke="#000" stroke-width="1"/>
+  <rect x="24" y="736" width="120" height="34" rx="8" fill="none" stroke="#000" stroke-width="1.5"/>
+  <text x="84" y="759" text-anchor="middle" font-family="DejaVu Sans" font-size="17" fill="#000">Назад</text>
+  <rect x="160" y="736" width="140" height="34" rx="8" fill="none" stroke="#000" stroke-width="1.5"/>
+  <text x="230" y="759" text-anchor="middle" font-family="DejaVu Sans" font-size="17" fill="#000">Открыть</text>
+  <rect x="316" y="736" width="130" height="34" rx="8" fill="none" stroke="#000" stroke-width="1.5"/>
+  <text x="381" y="759" text-anchor="middle" font-family="DejaVu Sans" font-size="17" fill="#000">Описание</text>
+</svg>

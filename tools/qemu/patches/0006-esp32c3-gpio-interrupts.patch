@@ -1,0 +1,177 @@
+--- hw/gpio/esp32_gpio.c
++++ hw/gpio/esp32_gpio.c
+@@ -42,6 +42,98 @@
+     return pin;
+ }
+ 
++/* Effective level seen on a pin: the driven output value, the level injected by
++ * an external device, or the internal pull-up. */
++static unsigned esp32_gpio_pin_level(Esp32GpioState *s, unsigned pin)
++{
++    if (s->gpio_enable & (1u << pin)) {
++        return (s->gpio_out >> pin) & 1;
++    }
++    if (s->gpio_in_mask & (1u << pin)) {
++        return (s->gpio_in >> pin) & 1;
++    }
++    return (s->gpio_pullup >> pin) & 1;
++}
++
++/* Recompute the per-pin interrupt-enable mask and drive the (level) GPIO IRQ
++ * towards the interrupt matrix. */
++static void esp32_gpio_update_irq(Esp32GpioState *s)
++{
++    uint32_t mask = 0;
++    unsigned pin;
++
++    for (pin = 0; pin < s->num_gpios && pin < ESP_GPIO_MAX_PINS; pin++) {
++        if ((s->pin_cfg[pin] >> ESP_GPIO_PIN_INT_ENA_SHIFT) &
++            ESP_GPIO_PIN_INT_ENA_MASK) {
++            mask |= 1u << pin;
++        }
++    }
++    s->int_ena_mask = mask;
++    qemu_set_irq(s->irq, (s->status & mask) != 0);
++}
++
++/* Apply the interrupt configured in PINx_CNF to a level change of one pin. */
++static void esp32_gpio_pin_changed(Esp32GpioState *s, unsigned pin,
++                                   unsigned old_level)
++{
++    unsigned new_level = esp32_gpio_pin_level(s, pin);
++    uint32_t cfg = s->pin_cfg[pin];
++    unsigned type = (cfg >> ESP_GPIO_PIN_INT_TYPE_SHIFT) & 0x7;
++    bool enabled = ((cfg >> ESP_GPIO_PIN_INT_ENA_SHIFT) &
++                    ESP_GPIO_PIN_INT_ENA_MASK) != 0;
++    bool fire = false;
++
++    if (!enabled) {
++        return;
++    }
++
++    switch (type) {
++    case ESP_GPIO_INTR_POSEDGE:
++        fire = old_level == 0 && new_level == 1;
++        break;
++    case ESP_GPIO_INTR_NEGEDGE:
++        fire = old_level == 1 && new_level == 0;
++        break;
++    case ESP_GPIO_INTR_ANYEDGE:
++        fire = old_level != new_level;
++        break;
++    case ESP_GPIO_INTR_LOW_LEVEL:
++        fire = new_level == 0;
++        break;
++    case ESP_GPIO_INTR_HIGH_LEVEL:
++        fire = new_level == 1;
++        break;
++    default:
++        break;
++    }
++
++    if (fire) {
++        s->status |= 1u << pin;
++        esp32_gpio_update_irq(s);
++    }
++}
++
++/* Re-evaluate the effective level of every pin in @candidates (0 = all pins)
++ * and feed the ones that changed into the interrupt logic. */
++static void esp32_gpio_refresh_levels(Esp32GpioState *s, uint32_t candidates)
++{
++    unsigned pin;
++
++    for (pin = 0; pin < s->num_gpios && pin < ESP_GPIO_MAX_PINS; pin++) {
++        unsigned old_level, new_level;
++
++        if (candidates && !(candidates & (1u << pin))) {
++            continue;
++        }
++        old_level = (s->gpio_level >> pin) & 1;
++        new_level = esp32_gpio_pin_level(s, pin);
++        if (old_level != new_level) {
++            s->gpio_level = (s->gpio_level & ~(1u << pin)) | (new_level << pin);
++            esp32_gpio_pin_changed(s, pin, old_level);
++        }
++    }
++}
++
+ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
+ {
+     Esp32GpioState *s = ESP32_GPIO(opaque);
+@@ -81,7 +173,7 @@
+                        uint64_t value, unsigned int size)
+ {
+     Esp32GpioState *s = ESP32_GPIO(opaque);
+-    int pin;
++    int pin = -1;
+ 
+     if (s->out_off && addr == s->out_off) {
+         s->gpio_out = (uint32_t)value;
+@@ -111,6 +203,12 @@
+                                                s->pin_cfg_off)) >= 0) {
+         s->pin_cfg[pin] = (uint32_t)value;
+     }
++    esp32_gpio_refresh_levels(s, 0);
++    /* A freshly enabled level interrupt fires right away on real hardware. */
++    if (pin >= 0 && pin < ESP_GPIO_MAX_PINS) {
++        esp32_gpio_pin_changed(s, pin, esp32_gpio_pin_level(s, pin));
++    }
++    esp32_gpio_update_irq(s);
+ }
+ 
+ static const MemoryRegionOps gpio_ops = {
+@@ -164,10 +262,20 @@
+         s->gpio_in &= ~(1u << pin);
+     }
+     s->gpio_in_mask |= 1u << pin;
++    esp32_gpio_refresh_levels(s, 1u << pin);
+ }
+ 
+ static void esp32_gpio_reset_hold(Object *obj, ResetType type)
+ {
++    Esp32GpioState *s = ESP32_GPIO(obj);
++
++    s->status = 0;
++    s->gpio_level = 0;
++    s->int_ena_mask = 0;
++    qemu_set_irq(s->irq, 0);
++    /* The external lines keep driving their levels across reset; resynchronise
++     * the cached levels, otherwise the first edge after reset is lost. */
++    esp32_gpio_refresh_levels(s, 0);
+ }
+ 
+ static void esp32_gpio_realize(DeviceState *dev, Error **errp)
+--- include/hw/gpio/esp32_gpio.h
++++ include/hw/gpio/esp32_gpio.h
+@@ -23,6 +23,19 @@
+ #define ESP_IOMUX_FUN_PD_BIT    7
+ #define ESP_IOMUX_FUN_PU_BIT    8
+ 
++/* PINx_CNF bit fields (ESP32-C3: INT_TYPE [9:7], INT_ENA [17:13]) */
++#define ESP_GPIO_PIN_INT_TYPE_SHIFT 7
++#define ESP_GPIO_PIN_INT_ENA_SHIFT  13
++#define ESP_GPIO_PIN_INT_ENA_MASK   0x1f
++
++/* Interrupt type encoding, same as ESP-IDF gpio_int_type_t */
++#define ESP_GPIO_INTR_DISABLE    0
++#define ESP_GPIO_INTR_POSEDGE    1
++#define ESP_GPIO_INTR_NEGEDGE    2
++#define ESP_GPIO_INTR_ANYEDGE    3
++#define ESP_GPIO_INTR_LOW_LEVEL  4
++#define ESP_GPIO_INTR_HIGH_LEVEL 5
++
+ typedef struct Esp32GpioState {
+     SysBusDevice parent_obj;
+ 
+@@ -57,6 +70,10 @@
+ 
+     /* Interrupt status */
+     uint32_t status;
++    /* Effective level of every pin as seen by the interrupt logic, and the
++     * mask of pins whose PINx_CNF has an interrupt enabled. */
++    uint32_t gpio_level;
++    uint32_t int_ena_mask;
+     uint32_t status_off;         /* GPIO_STATUS_REG offset */
+     uint32_t status_w1ts_off;    /* GPIO_STATUS_W1TS_REG offset */
+     uint32_t status_w1tc_off;    /* GPIO_STATUS_W1TC_REG offset */

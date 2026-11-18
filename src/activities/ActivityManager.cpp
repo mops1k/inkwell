@@ -17,9 +17,10 @@
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
+#include "components/UITheme.h"
+#include "home/BookInfoActivity.h"
 #include "home/FileBrowserActivity.h"
 #include "home/GlobalBookmarksActivity.h"
-#include "home/HomeActivity.h"
 #include "home/RecentBooksActivity.h"
 #include "network/BootHealth.h"
 #include "network/CrossPointWebServerActivity.h"
@@ -482,6 +483,11 @@ void ActivityManager::returnFromChild() {
     case ReturnTo::Shelf:
       goToShelf(std::move(hint.selectName));
       break;
+    case ReturnTo::BookCard:
+      // Leaving the reader lands on the book's card, not on the grid: the card is the
+      // screen the book was opened from, so Back walks the same path in reverse.
+      replaceActivity(std::make_unique<BookInfoActivity>(renderer, mappedInput, std::move(hint.selectName), true));
+      break;
     case ReturnTo::Home:
     default:
       goHome(std::move(hint.selectName), hint.selectIndex);
@@ -506,18 +512,21 @@ void ActivityManager::goToShelf(std::string focusBookPath) {
 
 void ActivityManager::goHome(std::string focusBookPath, int focusSelectorIndex) {
   hasReturnHint = false;
-  replaceActivity(std::make_unique<HomeActivity>(renderer, mappedInput, std::move(focusBookPath), focusSelectorIndex));
+  // The library is the home screen: boot, reader exit and every generic "back to
+  // the start" land on the shelf, not on the old tile menu.
+  replaceActivity(std::make_unique<ShelfActivity>(renderer, mappedInput, std::move(focusBookPath), focusSelectorIndex));
 }
 
 HomeSleepState ActivityManager::captureHomeForQuickSleep() const {
   RenderLock lock;
-  if (!currentActivity || currentActivity->getName() != "Home") return {};
-  return static_cast<const HomeActivity&>(*currentActivity).getSleepState();
+  // The library is the home screen now; HomeActivity is gone.
+  if (!currentActivity || currentActivity->getName() != "Shelf") return {};
+  return static_cast<const ShelfActivity&>(*currentActivity).getSleepState();
 }
 
 void ActivityManager::resumeHomeFromQuickSleep(const HomeSleepState& state) {
   hasReturnHint = false;
-  replaceActivity(std::make_unique<HomeActivity>(renderer, mappedInput, state));
+  replaceActivity(std::make_unique<ShelfActivity>(renderer, mappedInput, std::string{}, state.selectorIndex));
 }
 
 void ActivityManager::pushActivity(std::unique_ptr<Activity>&& activity) {

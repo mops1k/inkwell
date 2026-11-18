@@ -44,3 +44,6 @@ lib/EpdFont/scripts/output/
 # (worktrees, scheduled-task locks, settings.local, scout CLEANUP.md) out.
 .claude/*
 !.claude/skills/
+
+# Agent session state (plan store export, checkpoints)
+.dsh/

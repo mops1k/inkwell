@@ -35,6 +35,20 @@ TEST(ShelfFb2, ReadsUtf8Metadata) {
   EXPECT_EQ("Synthetic anchor regression", meta.title);
 }
 
+// Real FB2 files pad <genre> with newlines and list several genres; the shelf
+// shows one genre and filters by it, so the scanner output is normalised.
+TEST(ShelfFb2, GenreIsOneTrimmedLine) {
+  shelf::BookMeta meta;
+  ASSERT_TRUE(shelf::readFb2Metadata(fixture("fb2_split_anchors.fb2"), shelf::BookFormat::Fb2, meta));
+  EXPECT_EQ(meta.genre.find('\n'), std::string::npos);
+  EXPECT_EQ(meta.genre.find('\r'), std::string::npos);
+  EXPECT_EQ(meta.genre.find("  "), std::string::npos);
+  if (!meta.genre.empty()) {
+    EXPECT_NE(meta.genre.front(), ' ');
+    EXPECT_NE(meta.genre.back(), ' ');
+  }
+}
+
 TEST(ShelfFb2, ReadsMetadataFromZipArchive) {
   shelf::BookMeta meta;
   ASSERT_TRUE(shelf::readFb2Metadata(shelfFixture("fb2_inside.zip"), shelf::BookFormat::Fb2Zip, meta));

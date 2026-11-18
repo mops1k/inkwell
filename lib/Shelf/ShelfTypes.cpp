@@ -24,6 +24,25 @@ const char* bookFormatName(BookFormat format) {
   return "unknown";
 }
 
+const char* bookFormatLabel(BookFormat format) {
+  switch (format) {
+    case BookFormat::Epub:
+      return "EPUB";
+    case BookFormat::Fb2:
+    case BookFormat::Fb2Zip:
+      return "FB2";
+    case BookFormat::Txt:
+      return "TXT";
+    case BookFormat::Markdown:
+      return "MD";
+    case BookFormat::Xtc:
+      return "XTC";
+    case BookFormat::Unknown:
+      break;
+  }
+  return "";
+}
+
 BookFormat bookFormatFromName(std::string_view name) {
   if (name == "epub") return BookFormat::Epub;
   if (name == "fb2") return BookFormat::Fb2;

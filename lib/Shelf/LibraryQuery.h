@@ -17,6 +17,7 @@ enum class FilterField : uint8_t {
   Author,
   Series,
   Genre,
+  Format,
 };
 
 const char* filterFieldName(FilterField field);  // stable JSON name, never UI text
@@ -49,8 +50,13 @@ struct LibraryFilter {
 struct LibraryQuery {
   LibraryFilter filter;
   SortKey sort = SortKey::Title;
+  // Books the user hid from the library. Paths, because a hidden book keeps its
+  // index entry (a rescan must not resurrect it) yet never appears in the grid,
+  // the filter value lists or the series walk.
+  std::vector<std::string> hiddenPaths;
 
-  bool matches(const ShelfBook& book) const { return filter.matches(book); }
+  bool isHidden(const ShelfBook& book) const;
+  bool matches(const ShelfBook& book) const { return filter.matches(book) && !isHidden(book); }
 
   // Fills `out` with indices into `index.books`, filtered and ordered. The
   // caller keeps the index alive; the shelf passes the result to the grid.
@@ -58,11 +64,21 @@ struct LibraryQuery {
   // index book, 0 = never opened (those sort after everything opened).
   void apply(const ShelfIndex& index, std::vector<uint16_t>& out,
              const std::vector<uint32_t>* lastOpenedEpochs = nullptr) const;
+
+  // Distinct values of `field` present in the visible library, deduplicated and
+  // sorted case-insensitively; books with an empty field or hidden from the
+  // library are skipped. `cap` bounds the list so a pathological library cannot
+  // grow a picker past RAM.
+  void collectValues(const ShelfIndex& index, FilterField field, std::vector<std::string>& out, size_t cap = 120) const;
 };
 
-// Distinct values of `field` present in the index, deduplicated and sorted
-// case-insensitively; books with an empty field are skipped. `cap` bounds the
-// list so a pathological library cannot grow a picker past RAM.
+// Convenience overload for callers with no hidden books (tests, exporters).
 void collectValues(const ShelfIndex& index, FilterField field, std::vector<std::string>& out, size_t cap = 120);
+
+// Fills `out` with indices into `index.books` of the books that belong to
+// `series`, in reading order: the decimal <sequence number> first (books without
+// a usable number go last), ties broken by title. Used by the book card so
+// Left/Right walk the series instead of leaving the card.
+void collectSeriesBooks(const ShelfIndex& index, const std::string& series, std::vector<uint16_t>& out);
 
 }  // namespace shelf

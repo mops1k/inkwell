@@ -15,4 +15,10 @@ namespace shelf {
 // the scratch file is always removed.
 bool readFb2Metadata(const std::string& path, BookFormat format, BookMeta& out);
 
+// Makes the FB2 XML of `path` readable with random access: a plain .fb2 is used
+// directly, the single .fb2.zip entry is staged next to the book. `temporary` says
+// whether the caller must delete `xmlPath` when done. Shared by the metadata reader
+// and the cover extractor so both stage archives the same way.
+bool openFb2XmlForScan(const std::string& path, BookFormat format, std::string& xmlPath, bool& temporary);
+
 }  // namespace shelf

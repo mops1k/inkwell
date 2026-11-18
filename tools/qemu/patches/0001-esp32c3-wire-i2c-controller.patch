@@ -1,5 +1,5 @@
---- hw/riscv/esp32c3.c	2026-11-09 17:14:34.000000000 +0300
-+++ /home/mops1k/Development/xteink-shelf/.venv/qemu/src/hw/riscv/esp32c3.c	2026-11-18 16:52:39.191186927 +0300
+--- hw/riscv/esp32c3.c
++++ hw/riscv/esp32c3.c
 @@ -40,6 +40,7 @@
  #include "hw/timer/esp32c3_timg.h"
  #include "hw/timer/esp32c3_systimer.h"

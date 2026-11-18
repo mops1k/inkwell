@@ -1,14 +1,18 @@
 #include "LibraryQuery.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <string_view>
+#include <utility>
 
 namespace shelf {
 
 namespace {
 
-constexpr FilterField kFields[] = {FilterField::Author, FilterField::Series, FilterField::Genre};
+constexpr FilterField kFields[] = {FilterField::Author, FilterField::Series, FilterField::Genre, FilterField::Format};
+
+std::string formatValue(const ShelfBook& book) { return bookFormatLabel(book.format); }
 constexpr SortKey kSortKeys[] = {SortKey::Title, SortKey::Author, SortKey::LastOpened};
 
 const std::string& fieldValue(const BookMeta& meta, FilterField field) {
@@ -52,6 +56,8 @@ const char* filterFieldName(FilterField field) {
       return "series";
     case FilterField::Genre:
       return "genre";
+    case FilterField::Format:
+      return "format";
     case FilterField::None:
       break;
   }
@@ -86,8 +92,18 @@ SortKey sortKeyFromName(std::string_view name) {
 
 bool LibraryFilter::matches(const ShelfBook& book) const {
   if (!active()) return true;
-  const std::string& value = fieldValue(book.meta, field);
-  return !value.empty() && value == this->value;
+  // Format is not part of BookMeta: it is the detected container type, and its
+  // label is the same string the cover chip shows.
+  if (field == FilterField::Format) {
+    const std::string format = formatValue(book);
+    return !format.empty() && format == value;
+  }
+  const std::string& fieldText = fieldValue(book.meta, field);
+  return !fieldText.empty() && fieldText == value;
+}
+
+bool LibraryQuery::isHidden(const ShelfBook& book) const {
+  return std::find(hiddenPaths.begin(), hiddenPaths.end(), book.path) != hiddenPaths.end();
 }
 
 void LibraryQuery::apply(const ShelfIndex& index, std::vector<uint16_t>& out,
@@ -139,17 +155,54 @@ void LibraryQuery::apply(const ShelfIndex& index, std::vector<uint16_t>& out,
   });
 }
 
-void collectValues(const ShelfIndex& index, FilterField field, std::vector<std::string>& out, size_t cap) {
+void LibraryQuery::collectValues(const ShelfIndex& index, FilterField field, std::vector<std::string>& out,
+                                 size_t cap) const {
   out.clear();
   if (field == FilterField::None) return;
   for (const auto& book : index.books) {
-    const std::string& value = fieldValue(book.meta, field);
+    if (isHidden(book)) continue;
+    const std::string value = field == FilterField::Format ? formatValue(book) : fieldValue(book.meta, field);
     if (value.empty()) continue;
     if (std::find(out.begin(), out.end(), value) != out.end()) continue;
     if (out.size() >= cap) break;
     out.push_back(value);
   }
   std::sort(out.begin(), out.end(), [](const std::string& a, const std::string& b) { return compareFold(a, b) < 0; });
+}
+
+void collectValues(const ShelfIndex& index, FilterField field, std::vector<std::string>& out, size_t cap) {
+  LibraryQuery{}.collectValues(index, field, out, cap);
+}
+
+void collectSeriesBooks(const ShelfIndex& index, const std::string& series, std::vector<uint16_t>& out) {
+  out.clear();
+  if (series.empty()) return;
+  std::vector<std::pair<double, uint16_t>> ordered;
+  std::vector<uint16_t> unnumbered;
+  for (uint16_t i = 0; i < index.books.size(); ++i) {
+    const shelf::ShelfBook& book = index.books[i];
+    if (book.meta.series != series) continue;
+    if (!book.meta.seriesIndex.empty()) {
+      const char* raw = book.meta.seriesIndex.c_str();
+      char* end = nullptr;
+      const double number = std::strtod(raw, &end);
+      if (end != raw) {
+        ordered.emplace_back(number, i);
+        continue;
+      }
+    }
+    unnumbered.push_back(i);
+  }
+  const auto byTitle = [&index](uint16_t a, uint16_t b) {
+    return compareFold(index.books[a].meta.title, index.books[b].meta.title) < 0;
+  };
+  std::stable_sort(ordered.begin(), ordered.end(), [&byTitle](const auto& a, const auto& b) {
+    if (a.first != b.first) return a.first < b.first;
+    return byTitle(a.second, b.second);
+  });
+  std::stable_sort(unnumbered.begin(), unnumbered.end(), byTitle);
+  for (const auto& entry : ordered) out.push_back(entry.second);
+  out.insert(out.end(), unnumbered.begin(), unnumbered.end());
 }
 
 }  // namespace shelf

@@ -1,0 +1,309 @@
+--- hw/riscv/esp32c3.c
++++ hw/riscv/esp32c3.c
+@@ -47,6 +47,7 @@
+ #include "hw/misc/esp32c3_hmac.h"
+ #include "hw/misc/esp32c3_ds.h"
+ #include "hw/misc/esp32c3_xts_aes.h"
++#include "hw/misc/esp32c3_saradc.h"
+ #include "hw/misc/esp32c3_jtag.h"
+ #include "hw/dma/esp32c3_gdma.h"
+ #include "hw/display/esp_rgb.h"
+@@ -74,6 +75,7 @@
+     ESP32C3IntMatrixState intmatrix;
+     ESP32C3UARTState uart[ESP32C3_UART_COUNT];
+     ESP32C3GPIOState gpio;
++    ESP32C3SarAdcState saradc;
+     ESP32C3CacheState cache;
+     ESP32C3EfuseState efuse;
+     ESP32C3ClockState clock;
+@@ -411,6 +413,7 @@
+ 
+     object_initialize_child(OBJECT(machine), "intmatrix", &ms->intmatrix, TYPE_ESP32C3_INTMATRIX);
+     object_initialize_child(OBJECT(machine), "gpio", &ms->gpio, TYPE_ESP32C3_GPIO);
++    object_initialize_child(OBJECT(machine), "saradc", &ms->saradc, TYPE_ESP32C3_SARADC);
+     object_initialize_child(OBJECT(machine), "extmem", &ms->cache, TYPE_ESP32C3_CACHE);
+     object_initialize_child(OBJECT(machine), "efuse", &ms->efuse, TYPE_ESP32C3_EFUSE);
+     object_initialize_child(OBJECT(machine), "clock", &ms->clock, TYPE_ESP32C3_CLOCK);
+@@ -512,6 +515,19 @@
+                                             sysbus_mmio_get_region(gpio, 0), 0);
+         memory_region_add_subregion_overlap(sys_mem, DR_REG_IO_MUX_BASE,
+                                             sysbus_mmio_get_region(gpio, 1), 0);
++        sysbus_connect_irq(gpio, 0,
++                           qdev_get_gpio_in(intmatrix_dev, ETS_GPIO_INTR_SOURCE));
++    }
++
++    /* APB SAR ADC realization (analogRead / esp_adc oneshot) */
++    {
++        SysBusDevice *saradc = SYS_BUS_DEVICE(&ms->saradc);
++
++        sysbus_realize(saradc, &error_fatal);
++        memory_region_add_subregion_overlap(sys_mem, DR_REG_APB_SARADC_BASE,
++                                            sysbus_mmio_get_region(saradc, 0), 0);
++        sysbus_connect_irq(saradc, 0,
++                           qdev_get_gpio_in(intmatrix_dev, ETS_APB_ADC_INTR_SOURCE));
+     }
+ 
+     /* (Extmem) Cache realization */
+--- hw/misc/meson.build
++++ hw/misc/meson.build
+@@ -154,6 +154,7 @@
+   'esp32c3_sha.c',
+   'esp32c3_jtag.c',
+   'esp32c3_rtc_cntl.c',
++  'esp32c3_saradc.c',
+   'esp_hmac.c',
+   'esp32c3_hmac.c'
+ ))
+--- /dev/null
++++ include/hw/misc/esp32c3_saradc.h
+@@ -0,0 +1,53 @@
++#pragma once
++
++#include "hw/hw.h"
++#include "hw/sysbus.h"
++#include "hw/registerfields.h"
++
++#define TYPE_ESP32C3_SARADC "misc.esp32c3.saradc"
++#define ESP32C3_SARADC(obj) \
++    OBJECT_CHECK(ESP32C3SarAdcState, (obj), TYPE_ESP32C3_SARADC)
++
++/* APB_SARADC register offsets (ESP-IDF apb_saradc_reg.h, ESP32-C3) */
++REG32(SARADC_CTRL, 0x000)
++REG32(SARADC_CTRL2, 0x004)
++REG32(SARADC_ONETIME_SAMPLE, 0x020)
++REG32(SARADC_DATA1, 0x02C)     /* ADC1 data, bits [12:0] */
++REG32(SARADC_DATA2, 0x030)     /* ADC2 data, bits [12:0] */
++REG32(SARADC_INT_ENA, 0x040)
++REG32(SARADC_INT_RAW, 0x044)
++REG32(SARADC_INT_ST, 0x048)
++REG32(SARADC_INT_CLR, 0x04C)
++REG32(SARADC_DMA_CONF, 0x050)
++REG32(SARADC_CLKM_CONF, 0x054)
++
++#define ESP32C3_SARADC_IO_SIZE 0x100
++#define ESP32C3_SARADC_NUM_REGS (ESP32C3_SARADC_IO_SIZE / 4)
++
++/* CTRL / ONETIME_SAMPLE bits */
++#define ESP32C3_SARADC_CTRL_START        BIT(1)
++#define ESP32C3_SARADC_CTRL_START_FORCE  BIT(0)
++#define ESP32C3_SARADC_ONETIME_START     BIT(29)
++#define ESP32C3_SARADC_ONETIME_ADC1      BIT(31)
++#define ESP32C3_SARADC_ONETIME_ADC2      BIT(30)
++
++/* INT_RAW / INT_ENA bits */
++#define ESP32C3_SARADC_ADC1_DONE         BIT(31)
++#define ESP32C3_SARADC_ADC2_DONE         BIT(30)
++
++typedef struct ESP32C3SarAdcState {
++    SysBusDevice parent_obj;
++    MemoryRegion iomem;
++
++    /* Raw register file: every offset is readable once written */
++    uint32_t regs[ESP32C3_SARADC_NUM_REGS];
++
++    /* Pending conversion-done bits (INT_RAW) */
++    uint32_t raw_status;
++
++    /* Raw 12-bit value returned for every completed conversion. 4095 means
++     * "nothing connected" for the X3 ADC button ladder (no button pressed). */
++    uint32_t idle_raw;
++
++    qemu_irq irq;
++} ESP32C3SarAdcState;
+--- /dev/null
++++ hw/misc/esp32c3_saradc.c
+@@ -0,0 +1,194 @@
++/*
++ * ESP32-C3 SAR ADC (APB_SARADC) minimal emulation
++ *
++ * The firmware (ESP-IDF adc_oneshot / Arduino analogRead) starts a single
++ * conversion by writing APB_SARADC_ONETIME_SAMPLE with ONETIME_START, waits
++ * for the ADC1_DONE bit of APB_SARADC_INT_RAW and then reads the 12-bit
++ * result from APB_SARADC_1_DATA_STATUS. This model completes the conversion
++ * immediately and returns a configurable idle value, so analogRead() returns
++ * "nothing pressed" instead of spinning forever (which triggered the
++ * interrupt watchdog in QEMU).
++ *
++ * Copyright (c) 2024 Espressif Systems (Shanghai) Co. Ltd.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 or
++ * (at your option) any later version.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/log.h"
++#include "qemu/module.h"
++#include "qapi/error.h"
++#include "hw/hw.h"
++#include "hw/sysbus.h"
++#include "hw/irq.h"
++#include "hw/qdev-properties.h"
++#include "hw/misc/esp32c3_saradc.h"
++
++#define SARADC_DEBUG 0
++
++static void esp32c3_saradc_update_irq(ESP32C3SarAdcState *s)
++{
++    qemu_set_irq(s->irq, (s->raw_status & s->regs[R_SARADC_INT_ENA]) != 0);
++}
++
++static void esp32c3_saradc_complete(ESP32C3SarAdcState *s)
++{
++    /* Both ADC units report the same idle value: the board's ladder and the
++     * battery divider are not modelled yet. */
++    s->regs[R_SARADC_DATA1] = s->idle_raw & 0xfff;
++    s->regs[R_SARADC_DATA2] = s->idle_raw & 0xfff;
++    s->raw_status |= ESP32C3_SARADC_ADC1_DONE | ESP32C3_SARADC_ADC2_DONE;
++    esp32c3_saradc_update_irq(s);
++
++#if SARADC_DEBUG
++    info_report("[SARADC] conversion done, raw=0x%x", s->idle_raw);
++#endif
++}
++
++static uint64_t esp32c3_saradc_read(void *opaque, hwaddr addr, unsigned int size)
++{
++    ESP32C3SarAdcState *s = ESP32C3_SARADC(opaque);
++    uint32_t idx = addr / 4;
++    uint64_t r = 0;
++
++    if (idx >= ESP32C3_SARADC_NUM_REGS) {
++        return 0;
++    }
++
++    switch (addr) {
++    case A_SARADC_INT_RAW:
++        r = s->raw_status;
++        break;
++    case A_SARADC_INT_ST:
++        /* Status = raw & enable */
++        r = s->raw_status & s->regs[R_SARADC_INT_ENA];
++        break;
++    case A_SARADC_INT_CLR:
++        /* Write-only */
++        r = 0;
++        break;
++    default:
++        r = s->regs[idx];
++        break;
++    }
++
++#if SARADC_DEBUG
++    info_report("[SARADC] read 0x%lx -> 0x%lx", addr, r);
++#endif
++    return r;
++}
++
++static void esp32c3_saradc_write(void *opaque, hwaddr addr,
++                                 uint64_t value, unsigned int size)
++{
++    ESP32C3SarAdcState *s = ESP32C3_SARADC(opaque);
++    uint32_t idx = addr / 4;
++
++    if (idx >= ESP32C3_SARADC_NUM_REGS) {
++        return;
++    }
++
++#if SARADC_DEBUG
++    info_report("[SARADC] write 0x%lx = 0x%lx", addr, value);
++#endif
++
++    switch (addr) {
++    case A_SARADC_INT_RAW:
++    case A_SARADC_DATA1:
++    case A_SARADC_DATA2:
++        /* Read-only in hardware */
++        break;
++    case A_SARADC_INT_CLR:
++        s->raw_status &= ~(uint32_t)value;
++        esp32c3_saradc_update_irq(s);
++        break;
++    case A_SARADC_INT_ENA:
++        s->regs[idx] = (uint32_t)value;
++        esp32c3_saradc_update_irq(s);
++        break;
++    case A_SARADC_ONETIME_SAMPLE:
++        s->regs[idx] = (uint32_t)value;
++        if (value & ESP32C3_SARADC_ONETIME_START) {
++            esp32c3_saradc_complete(s);
++        }
++        break;
++    case A_SARADC_CTRL:
++        s->regs[idx] = (uint32_t)value;
++        if (value & (ESP32C3_SARADC_CTRL_START |
++                     ESP32C3_SARADC_CTRL_START_FORCE)) {
++            esp32c3_saradc_complete(s);
++        }
++        break;
++    default:
++        s->regs[idx] = (uint32_t)value;
++        break;
++    }
++}
++
++static const MemoryRegionOps esp32c3_saradc_ops = {
++    .read = esp32c3_saradc_read,
++    .write = esp32c3_saradc_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid = {
++        .min_access_size = 4,
++        .max_access_size = 4,
++    },
++};
++
++static void esp32c3_saradc_reset_hold(Object *obj, ResetType type)
++{
++    ESP32C3SarAdcState *s = ESP32C3_SARADC(obj);
++
++    memset(s->regs, 0, sizeof(s->regs));
++    s->raw_status = 0;
++    qemu_set_irq(s->irq, 0);
++}
++
++static void esp32c3_saradc_realize(DeviceState *dev, Error **errp)
++{
++    (void) dev;
++    (void) errp;
++}
++
++static void esp32c3_saradc_init(Object *obj)
++{
++    ESP32C3SarAdcState *s = ESP32C3_SARADC(obj);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
++
++    memory_region_init_io(&s->iomem, obj, &esp32c3_saradc_ops, s,
++                          TYPE_ESP32C3_SARADC, ESP32C3_SARADC_IO_SIZE);
++    sysbus_init_mmio(sbd, &s->iomem);
++    sysbus_init_irq(sbd, &s->irq);
++}
++
++static Property esp32c3_saradc_properties[] = {
++    DEFINE_PROP_UINT32("idle-raw", ESP32C3SarAdcState, idle_raw, 4095),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
++static void esp32c3_saradc_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    ResettableClass *rc = RESETTABLE_CLASS(klass);
++
++    dc->realize = esp32c3_saradc_realize;
++    device_class_set_props(dc, esp32c3_saradc_properties);
++    rc->phases.hold = esp32c3_saradc_reset_hold;
++}
++
++static const TypeInfo esp32c3_saradc_info = {
++    .name = TYPE_ESP32C3_SARADC,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(ESP32C3SarAdcState),
++    .instance_init = esp32c3_saradc_init,
++    .class_init = esp32c3_saradc_class_init,
++};
++
++static void esp32c3_saradc_register_types(void)
++{
++    type_register_static(&esp32c3_saradc_info);
++}
++
++type_init(esp32c3_saradc_register_types)

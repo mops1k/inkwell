@@ -1,0 +1,148 @@
+--- hw/riscv/esp32c3.c
++++ hw/riscv/esp32c3.c
+@@ -40,7 +40,13 @@
+ #include "hw/timer/esp32c3_timg.h"
+ #include "hw/timer/esp32c3_systimer.h"
+ #include "hw/ssi/esp32c3_spi.h"
++#include "hw/ssi/esp32c3_gpspi.h"
++#include "hw/ssi/ssi.h"
++#include "hw/sd/sd.h"
++#include "hw/i2c/i2c.h"
+ #include "hw/i2c/esp32_i2c.h"
++#include "hw/i2c/xteink_x3_i2c.h"
++#include "hw/display/xteink_uc8253.h"
+ #include "hw/misc/esp32c3_rtc_cntl.h"
+ #include "hw/misc/esp32c3_aes.h"
+ #include "hw/misc/esp32c3_rsa.h"
+@@ -89,6 +95,7 @@
+     ESP32C3TimgState timg[2];
+     ESP32C3SysTimerState systimer;
+     ESP32C3SpiState spi1;
++    ESP32C3GpspiState spi2;
+     Esp32I2CState i2c;
+     ESP32C3RtcCntlState rtccntl;
+     ESP32C3UsbJtagState jtag;
+@@ -237,6 +244,105 @@
+ }
+ 
+ 
++/*
++ * Xteink X3 board peripherals.
++ *
++ * The X3 hangs an e-paper panel and a microSD card off the ESP32-C3's
++ * general-purpose SPI2 controller, and a BQ27220 fuel gauge off I2C. All three
++ * use software chip selects routed through the GPIO matrix, so the models take
++ * their control lines from the GPIO peripheral's output lines instead of from
++ * the SPI controller's hardware CS outputs:
++ *
++ *   GPIO21 -> panel CS      GPIO4 -> panel DC      GPIO5 -> panel RST
++ *   GPIO6 <- panel BUSY     GPIO12 -> SD CS
++ *
++ * Nothing here is opt-in: these parts are soldered on the board, and without
++ * them the stock firmware spins in its display/SD bring-up and trips the
++ * interrupt watchdog.
++ */
++static void esp32c3_init_xteink_board(Esp32C3MachineState *ms,
++                                      MemoryRegion *sys_mem)
++{
++    /* Devices the firmware fingerprints to recognise an X3 board. */
++    static const struct {
++        uint8_t addr;
++        uint8_t kind;
++        bool wide;
++    } x3_i2c_chips[] = {
++        { X3_I2C_ADDR_BQ27220, X3_CHIP_BQ27220, true  },
++        { X3_I2C_ADDR_DS3231,  X3_CHIP_DS3231,  false },
++        { X3_I2C_ADDR_QMI8658, X3_CHIP_QMI8658, false },
++    };
++
++    DeviceState *gpio = DEVICE(&ms->gpio);
++    SysBusDevice *gpspi = SYS_BUS_DEVICE(&ms->spi2);
++    I2CBus *i2c_bus;
++    SSIBus *spi_bus;
++    DeviceState *panel;
++    DeviceState *sd;
++    DeviceState *card;
++    DeviceState *chip;
++    DriveInfo *dinfo;
++    unsigned i;
++
++    /* X3 board fingerprint: the firmware probes the fuel gauge at 0x55, the RTC
++     * at 0x68 and the IMU at 0x6B and only selects the X3 (UC8253) profile when
++     * at least two of them answer with plausible values. Without them the
++     * firmware decides it is an X4 and drives the wrong panel controller. */
++    i2c_bus = I2C_BUS(qdev_get_child_bus(DEVICE(&ms->i2c), "i2c"));
++    for (i = 0; i < ARRAY_SIZE(x3_i2c_chips); i++) {
++        chip = qdev_new(TYPE_X3_I2C_CHIP);
++        qdev_prop_set_uint8(chip, "kind", x3_i2c_chips[i].kind);
++        qdev_prop_set_bit(chip, "wide", x3_i2c_chips[i].wide);
++        qdev_prop_set_uint8(chip, "address", x3_i2c_chips[i].addr);
++        qdev_realize_and_unref(chip, BUS(i2c_bus), &error_fatal);
++    }
++
++    /* GP-SPI2 controller */
++    sysbus_realize(gpspi, &error_fatal);
++    memory_region_add_subregion_overlap(sys_mem, DR_REG_SPI2_BASE,
++                                        sysbus_mmio_get_region(gpspi, 0), 0);
++    spi_bus = (SSIBus *)qdev_get_child_bus(DEVICE(&ms->spi2), "spi");
++
++    /* UC8253 e-paper panel */
++    panel = qdev_new(TYPE_XTEINK_UC8253);
++    qdev_realize_and_unref(panel, BUS(spi_bus), &error_fatal);
++    qdev_connect_gpio_out(gpio, 21,
++                          qdev_get_gpio_in_named(panel, SSI_GPIO_CS, 0));
++    qdev_connect_gpio_out(gpio, 4,
++                          qdev_get_gpio_in_named(panel, XTEINK_UC8253_GPIO_DC, 0));
++    qdev_connect_gpio_out(gpio, 5,
++                          qdev_get_gpio_in_named(panel, XTEINK_UC8253_GPIO_RST, 0));
++    qdev_connect_gpio_out_named(panel, XTEINK_UC8253_GPIO_BUSY, 0,
++                                qdev_get_gpio_in(gpio, 6));
++    /* Deselect until the guest drives the line: an SSI peripheral's CS state
++     * starts asserted, which would make it see traffic from another device. */
++    qemu_irq_raise(qdev_get_gpio_in_named(panel, SSI_GPIO_CS, 0));
++
++    /* microSD card in SPI mode, sharing SCLK/MOSI with the panel. The SSI card
++     * model has no public header; it is created by type name, like the other
++     * boards in the tree do. */
++    sd = qdev_new("ssi-sd");
++    /* Distinct bus address from the panel: the SSI bus rejects two peripherals
++     * that claim the same CS index. The index is only a bus address here, the
++     * real chip selects come from the GPIO matrix. */
++    qdev_prop_set_uint8(sd, "cs", 1);
++    qdev_realize_and_unref(sd, BUS(spi_bus), &error_fatal);
++    qdev_connect_gpio_out(gpio, 12, qdev_get_gpio_in_named(sd, SSI_GPIO_CS, 0));
++    qemu_irq_raise(qdev_get_gpio_in_named(sd, SSI_GPIO_CS, 0));
++
++    /* The card itself; -drive if=sd supplies the image, otherwise the card is
++     * present but empty, which is enough to get past card identification. */
++    dinfo = drive_get(IF_SD, 0, 0);
++    card = qdev_new(TYPE_SD_CARD);
++    if (dinfo) {
++        qdev_prop_set_drive_err(card, "drive", blk_by_legacy_dinfo(dinfo),
++                                &error_fatal);
++    }
++    qdev_realize_and_unref(card,
++                           qdev_get_child_bus(sd, "sd-bus"), &error_fatal);
++}
++
+ static void esp32c3_init_openeth(Esp32C3MachineState *ms)
+ {
+     MemoryRegion* mr = NULL;
+@@ -428,6 +534,7 @@
+     object_initialize_child(OBJECT(machine), "timg1", &ms->timg[1], TYPE_ESP32C3_TIMG);
+     object_initialize_child(OBJECT(machine), "systimer", &ms->systimer, TYPE_ESP32C3_SYSTIMER);
+     object_initialize_child(OBJECT(machine), "spi1", &ms->spi1, TYPE_ESP32C3_SPI);
++    object_initialize_child(OBJECT(machine), "spi2", &ms->spi2, TYPE_ESP32C3_GPSPI);
+     object_initialize_child(OBJECT(machine), "i2c", &ms->i2c, TYPE_ESP32_I2C);
+     object_initialize_child(OBJECT(machine), "rtccntl", &ms->rtccntl, TYPE_ESP32C3_RTC_CNTL);
+     object_initialize_child(OBJECT(machine), "jtag", &ms->jtag, TYPE_ESP32C3_JTAG);
+@@ -530,6 +637,9 @@
+                            qdev_get_gpio_in(intmatrix_dev, ETS_APB_ADC_INTR_SOURCE));
+     }
+ 
++    /* Xteink X3 board: GP-SPI2 panel, SPI microSD, I2C fuel gauge */
++    esp32c3_init_xteink_board(ms, sys_mem);
++
+     /* (Extmem) Cache realization */
+     {
+         if (blk) {

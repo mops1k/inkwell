@@ -41,14 +41,14 @@ class EpubReaderActivity final : public Activity {
   // cachedSpineIndex / cachedChapterTotalPageCount / pendingPercent* / pendingParagraph* fields.
   struct NavigationTarget {
     enum class Kind : uint8_t {
-      Page,       // go to page n (0-based)
-      LastPage,   // go to last page of section (was UINT16_MAX sentinel)
-      Anchor,     // href fragment (e.g. "note1")
-      TocIndex,   // TOC entry index
-      Percent,    // normalised 0.0–1.0 within spine
-      Paragraph,  // KOReader paragraph LUT index
-      ListItem,   // KOReader li-anchored LUT index
-      TextAnchor, // match stored text in the current layout
+      Page,        // go to page n (0-based)
+      LastPage,    // go to last page of section (was UINT16_MAX sentinel)
+      Anchor,      // href fragment (e.g. "note1")
+      TocIndex,    // TOC entry index
+      Percent,     // normalised 0.0–1.0 within spine
+      Paragraph,   // KOReader paragraph LUT index
+      ListItem,    // KOReader li-anchored LUT index
+      TextAnchor,  // match stored text in the current layout
     };
     Kind kind = Kind::Page;
     union {
@@ -92,7 +92,7 @@ class EpubReaderActivity final : public Activity {
       return t;
     }
     static NavigationTarget makeTextAnchor(std::string text, int fallback,
-                                         std::optional<uint16_t> paragraph = std::nullopt) {
+                                           std::optional<uint16_t> paragraph = std::nullopt) {
       if (text.empty()) return makePage(fallback);
       auto target = makeAnchor(std::move(text), fallback);
       target.kind = Kind::TextAnchor;
@@ -736,7 +736,8 @@ class EpubReaderActivity final : public Activity {
   void stopAutomaticPageTurn();
   void applyBookReaderOverrides(int8_t embeddedStyleOverride, int8_t imageRenderingOverride, int8_t fontFamilyOverride,
                                 const std::string& sdFontFamilyOverride, int8_t fontSizeOverride,
-                                bool bionicReadingOverride, int8_t paragraphAlignmentOverride, uint8_t fontPointSizeOverride = 0);
+                                bool bionicReadingOverride, int8_t paragraphAlignmentOverride,
+                                uint8_t fontPointSizeOverride = 0);
   // Wider variant that also covers AA, hyphenation and guide dots. Used by
   // QuickOverridesActivity; the narrower overload above funnels through here,
   // preserving the AA/hyphenation/guide-dots values currently held on this activity.
@@ -815,7 +816,7 @@ class EpubReaderActivity final : public Activity {
   // 40 ms slice was followed by a 50 ms idle delay at 10 MHz. Declaring the work makes the loop
   // stop calling this state idle at all: slices run back to back, the build finishes sooner, and
   // Background-B hands the borrowed framebuffer back that much earlier. Same failure and same
-  // remedy as HomeActivity's cover decoding (see its skipLoopDelay).
+  // remedy as the library's cover decoding (see its skipLoopDelay).
   bool skipLoopDelay() override {
     return (section && section->hasActiveBuild()) || backgroundBuildState_ == BackgroundBuildState::Building;
   }

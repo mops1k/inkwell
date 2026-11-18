@@ -71,6 +71,24 @@ TEST(ShelfIndexer, WalksRootTwoLevelsAndBooksRecursively) {
   EXPECT_EQ(3, ctx.calls);
 }
 
+TEST(ShelfIndexer, CrashReportAtTheCardRootIsNotABook) {
+  // Upstream HalSystem writes its diagnostic log to /crash_report.txt; the shelf
+  // must never show it as a TXT book (the card filesystem is case-insensitive).
+  shelftest::TempDir dir("indexer_crashlog");
+  writeFile(dir.join("crash_report.txt"), "Guru Meditation Error: Core 0 panic'ed");
+  writeFile(dir.join("CRASH_REPORT.TXT"), "same file, upper-case name");
+  writeFile(dir.join("books/good.txt"), "a real book");
+
+  FakeMeta ctx;
+  shelf::ShelfIndexer indexer(fakeMetadata, &ctx);
+  shelf::ShelfIndex index;
+  indexer.scan(index, optionsFor(dir));
+
+  ASSERT_EQ(1u, index.books.size());
+  EXPECT_EQ(1u, countPaths(index, "good.txt"));
+  EXPECT_EQ(0u, countPaths(index, "crash_report"));
+}
+
 TEST(ShelfIndexer, UnchangedFilesAreNotReopened) {
   shelftest::TempDir dir("indexer_increment");
   writeFile(dir.join("top.txt"), "root book");

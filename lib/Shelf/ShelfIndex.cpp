@@ -14,7 +14,10 @@ namespace {
 // v2 added `genre` (first FB2 <genre> / EPUB dc:subject) for the shelf's genre
 // filter. A v1 file still loads: its books simply have no genre until the next
 // scan fills one in, so a firmware downgrade/upgrade never forces a full rescan.
-constexpr int kIndexVersion = 2;
+// v3: the FB2/FB2.ZIP scanner now yields series/sequence. A version bump makes
+// the stored index unreadable, so the next entry rebuilds it instead of keeping
+// every cached book with the empty series its old scan produced.
+constexpr int kIndexVersion = 3;
 constexpr int kMinSupportedVersion = 1;
 // Leave room for the surrounding quotes and any escape expansion inside the
 // parser's token buffer; a value that still overflows is truncated on write,

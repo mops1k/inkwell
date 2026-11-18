@@ -1,0 +1,242 @@
+--- hw/sd/ssi-sd.c
++++ hw/sd/ssi-sd.c
+@@ -43,7 +43,8 @@
+  * command (and one per data block) on stderr, capped so a long boot log stays
+  * readable (SSISD_TRACE_MAX raises the cap). It is what shows that SdFat
+  * mounted the card: CMD17/CMD18 with arg 0 is the MBR, then the partition boot
+- * sector, then the FAT and the directory clusters. */
++ * sector, then the FAT and the directory clusters — and, since Q6, that writes
++ * happened: "data token 0xfe", "data=512 write done" and the block address. */
+ #define SSISD_TRACE_LINES 200
+ static int ssi_sd_trace_enabled(void)
+ {
+@@ -101,6 +102,11 @@
+     SSI_SD_DATA_CRC16,
+     SSI_SD_DATA_WRITE,
+     SSI_SD_SKIP_CRC16,
++    /* Programming ("busy") phase after a written block. A real card holds MISO
++     * low while it commits the block; the host polls 0xFF until it is released.
++     * Modelled as a byte budget rather than a timer so it needs no QEMU clock
++     * and cannot deadlock a guest that polls a fixed number of times. */
++    SSI_SD_WRITE_BUSY,
+ } ssi_sd_mode;
+ 
+ struct ssi_sd_state {
+@@ -115,6 +121,12 @@
+     int32_t arglen;
+     int32_t response_pos;
+     int32_t stopping;
++    /* Argument (block address) of the write command in flight, only for the
++     * trace: "cmd=24 arg=0x... data=512 write done" is what proves that a block
++     * really reached the image, and the address is what differs per block. */
++    uint32_t write_addr;
++    /* Remaining MISO-low bytes of the programming phase (SSI_SD_WRITE_BUSY). */
++    int32_t busy_bytes;
+     /* The card's R1 "in idle state" bit, tracked from CMD0/CMD1/ACMD41 so the
+      * R3/R7 responses of CMD8/CMD58 can carry a real R1 byte. The SD protocol
+      * layer returns only the payload of R3/R7 (the 4 OCR/VHS bytes), so the R1
+@@ -158,6 +170,37 @@
+ /* data accepted */
+ #define DATA_RESPONSE_ACCEPTED  0x05
+ 
++/* How many polled bytes the card reports "busy" after accepting a block. Eight
++ * is enough for the trace and for a driver to see a real programming phase, and
++ * short enough that a host which does not poll at all is not affected. */
++#define SSI_SD_WRITE_BUSY_BYTES 8
++
++/* Decide the next phase after the last byte of a response.
++ *
++ * The decision is taken on the same byte that carries the last response byte
++ * and not one byte later: in SPI the host starts the next phase immediately
++ * after the R1 — for a write that next byte *is* the 0xFE data token. A
++ * one-byte lag therefore ate the token itself and every following data byte was
++ * decoded as a command, which is why CMD24 never received its data and SdFat
++ * gave up with R1 = 0x04 after the card had already left the transfer state
++ * (Q6).
++ */
++static void ssi_sd_response_done(ssi_sd_state *s)
++{
++    if (s->stopping) {
++        s->stopping = 0;
++        s->mode = SSI_SD_CMD;
++    } else if (s->busy_bytes > 0) {
++        s->mode = SSI_SD_WRITE_BUSY;
++    } else if (sdbus_data_ready(&s->sdbus)) {
++        s->mode = SSI_SD_PREP_DATA;
++    } else {
++        /* No data to read: either plain command mode, or a write is pending and
++         * the engine waits for its data token there. */
++        s->mode = SSI_SD_CMD;
++    }
++}
++
+ static uint32_t ssi_sd_transfer(SSIPeripheral *dev, uint32_t val)
+ {
+     ssi_sd_state *s = SSI_SD(dev);
+@@ -186,6 +229,20 @@
+         }
+     }
+ 
++    /* Programming phase of a written block: MISO stays low while the host polls
++     * (0xFF, some drivers use 0x00 — a command byte is always 0x4x…, so neither
++     * can be one). Any other byte means the host has moved on (SdFat may send
++     * the next command without a single busy poll), so it is decoded as a
++     * command below instead of being swallowed. */
++    if (s->mode == SSI_SD_WRITE_BUSY) {
++        if (s->busy_bytes > 0 && (val == SSI_DUMMY || val == 0x00)) {
++            s->busy_bytes--;
++            return 0x00;
++        }
++        s->busy_bytes = 0;
++        s->mode = SSI_SD_CMD;
++    }
++
+     switch (s->mode) {
+     case SSI_SD_CMD:
+         switch (val) {
+@@ -195,11 +252,25 @@
+             break;
+         case SSI_TOKEN_SINGLE:
+         case SSI_TOKEN_MULTI_WRITE:
++            /* A data token is only meaningful while the card itself is in the
++             * receiving-data state (i.e. after CMD24/CMD25). Accepting it at any
++             * other time would silently eat the next 512 bytes. */
++            if (!sdbus_receive_ready(&s->sdbus)) {
++                DPRINTF("Write token without a pending write\n");
++                SSISD_TRACE("data token 0x%02x ignored cmd=%d (no pending write)\n",
++                            val, s->cmd);
++                return SSI_DUMMY;
++            }
+             DPRINTF("Start write block\n");
++            SSISD_TRACE("data token 0x%02x cmd=%d arg=0x%08x\n", val, s->cmd,
++                        s->write_addr);
++            s->write_bytes = 0;
++            s->busy_bytes = 0;
+             s->mode = SSI_SD_DATA_WRITE;
+             return SSI_DUMMY;
+         case SSI_TOKEN_STOP_TRAN:
+             DPRINTF("Stop multiple write\n");
++            SSISD_TRACE("stop transmission (0x%02x) cmd=%d\n", val, s->cmd);
+ 
+             /* manually issue cmd12 to stop the transfer */
+             request.cmd = 12;
+@@ -229,10 +300,18 @@
+             request.cmd = s->cmd;
+             request.arg = ldl_be_p(s->cmdarg);
+             DPRINTF("CMD%d arg 0x%08x\n", s->cmd, request.arg);
++            if (s->cmd == 24 || s->cmd == 25) {
++                s->write_addr = request.arg;
++                s->write_bytes = 0;
++            }
+             s->arglen = sdbus_do_command(&s->sdbus, &request, longresp);
+             SSISD_TRACE("cmd=%d arg=0x%08x rlen=%d\n", request.cmd, request.arg,
+                         s->arglen);
+             if (s->arglen <= 0) {
++                /* No response at all. In SPI mode a card always answers R1, and
++                 * "illegal command" is the only thing this layer can say when
++                 * the protocol model produced nothing (Q6 patch 0024 makes
++                 * sd.c answer R1 itself, so this is a fallback). */
+                 s->arglen = 1;
+                 s->response[0] = 4;
+                 DPRINTF("SD command failed\n");
+@@ -320,26 +399,22 @@
+         return SSI_DUMMY;
+     case SSI_SD_RESPONSE:
+         if (s->response_pos < s->arglen) {
+-            DPRINTF("Response 0x%02x\n", s->response[s->response_pos]);
++            uint8_t ret = s->response[s->response_pos];
++
++            DPRINTF("Response 0x%02x\n", ret);
+             if (s->response_pos == 0) {
+                 /* R1 (or R3/R7 for CMD8/CMD58): the byte the driver decides on. */
+-                SSISD_TRACE("r1 cmd=%d = 0x%02x\n", s->cmd,
+-                            s->response[0]);
++                SSISD_TRACE("r1 cmd=%d = 0x%02x\n", s->cmd, ret);
+             }
+-            return s->response[s->response_pos++];
+-        }
+-        if (s->stopping) {
+-            s->stopping = 0;
+-            s->mode = SSI_SD_CMD;
+-            return SSI_DUMMY;
+-        }
+-        if (sdbus_data_ready(&s->sdbus)) {
+-            DPRINTF("Data read\n");
+-            s->mode = SSI_SD_DATA_START;
+-        } else {
+-            DPRINTF("End of command\n");
+-            s->mode = SSI_SD_CMD;
++            s->response_pos++;
++            if (s->response_pos >= s->arglen) {
++                /* Last byte: leave the state machine ready for the next phase on
++                 * this very transfer (see ssi_sd_response_done). */
++                ssi_sd_response_done(s);
++            }
++            return ret;
+         }
++        ssi_sd_response_done(s);
+         return SSI_DUMMY;
+     case SSI_SD_PREP_DATA:
+         DPRINTF("Prepare data block (Nac)\n");
+@@ -389,13 +464,23 @@
+         s->response_pos++;
+         if (s->response_pos == 2) {
+             DPRINTF("CRC16 receive end\n");
++            /* The block has been handed to the block backend by sd.c already
++             * (sd_write_byte() -> sd_blk_write() on the 512th byte), so an
++             * accepted data response token here means it is in the image. */
++            SSISD_TRACE("cmd=%d arg=0x%08x data=%d write done\n", s->cmd,
++                        s->write_addr, s->write_bytes);
+             s->mode = SSI_SD_RESPONSE;
+             s->write_bytes = 0;
+             s->arglen = 1;
+             s->response[0] = DATA_RESPONSE_ACCEPTED;
++            s->response[1] = 0;
+             s->response_pos = 0;
++            s->busy_bytes = SSI_SD_WRITE_BUSY_BYTES;
+         }
+         return SSI_DUMMY;
++    case SSI_SD_WRITE_BUSY:
++        /* Handled before the switch; kept so the enum stays exhaustive. */
++        return 0x00;
+     }
+     /* Should never happen.  */
+     return SSI_DUMMY;
+@@ -405,7 +490,7 @@
+ {
+     ssi_sd_state *s = (ssi_sd_state *)opaque;
+ 
+-    if (s->mode > SSI_SD_SKIP_CRC16) {
++    if (s->mode > SSI_SD_WRITE_BUSY) {
+         return -EINVAL;
+     }
+     if (s->mode == SSI_SD_CMDARG &&
+@@ -423,8 +508,8 @@
+ 
+ static const VMStateDescription vmstate_ssi_sd = {
+     .name = "ssi_sd",
+-    .version_id = 7,
+-    .minimum_version_id = 7,
++    .version_id = 8,
++    .minimum_version_id = 8,
+     .post_load = ssi_sd_post_load,
+     .fields = (const VMStateField []) {
+         VMSTATE_UINT32(mode, ssi_sd_state),
+@@ -437,6 +522,8 @@
+         VMSTATE_INT32(arglen, ssi_sd_state),
+         VMSTATE_INT32(response_pos, ssi_sd_state),
+         VMSTATE_INT32(stopping, ssi_sd_state),
++        VMSTATE_UINT32(write_addr, ssi_sd_state),
++        VMSTATE_INT32(busy_bytes, ssi_sd_state),
+         VMSTATE_SSI_PERIPHERAL(ssidev, ssi_sd_state),
+         VMSTATE_END_OF_LIST()
+     }
+@@ -463,6 +550,8 @@
+     s->arglen = 0;
+     s->response_pos = 0;
+     s->stopping = 0;
++    s->write_addr = 0;
++    s->busy_bytes = 0;
+     /* A card straight out of reset is in its idle state (R1 bit0 set) until a
+      * CMD1/ACMD41 completes. */
+     s->card_idle = true;

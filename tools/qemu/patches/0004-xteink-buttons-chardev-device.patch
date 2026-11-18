@@ -1,0 +1,247 @@
+--- /dev/null
++++ hw/gpio/xteink_buttons.c
+@@ -0,0 +1,233 @@
++/*
++ * xteink-buttons: a chardev-driven button source for the Xteink X3 board.
++ *
++ * The device reads single characters from a chardev and drives the matching
++ * ESP32 GPIO input lines (qdev input IRQs of the machine's esp32 GPIO model),
++ * emulating the board's active-low buttons:
++ *
++ *   b/B  back        c/C  confirm     l/L  left      r/R  right
++ *   u/U  up          d/D  down        p/P  power     -    release all
++ *
++ * Lowercase presses the button (the line is driven LOW), uppercase releases
++ * it (the line is driven HIGH again). Pins are configured through device
++ * properties, e.g.:
++ *
++ *   -chardev socket,id=keys,host=127.0.0.1,port=4545,server=on,wait=off \
++ *   -device xteink-buttons,chardev=keys,power-gpio=3
++ *
++ * Pins that are not specified (default is ESP_GPIO_PIN_UNSET) are left alone.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 or
++ * (at your option) any later version.
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/log.h"
++#include "qemu/module.h"
++#include "hw/hw.h"
++#include "hw/irq.h"
++#include "hw/qdev-core.h"
++#include "hw/qdev-properties.h"
++#include "hw/qdev-properties-system.h"
++#include "chardev/char-fe.h"
++#include "hw/gpio/esp32_gpio.h"
++
++#define TYPE_XTEINK_BUTTONS "xteink-buttons"
++#define XTEINK_BUTTONS(obj) \
++    OBJECT_CHECK(XteinkButtonsState, (obj), TYPE_XTEINK_BUTTONS)
++
++typedef enum XteinkButtonIndex {
++    XTEINK_BTN_BACK,
++    XTEINK_BTN_CONFIRM,
++    XTEINK_BTN_LEFT,
++    XTEINK_BTN_RIGHT,
++    XTEINK_BTN_UP,
++    XTEINK_BTN_DOWN,
++    XTEINK_BTN_POWER,
++    XTEINK_BTN_COUNT,
++} XteinkButtonIndex;
++
++typedef struct XteinkButtonsState {
++    DeviceState parent_obj;
++
++    CharBackend chr;
++
++    /* GPIO numbers configured on the command line, indexed by button. */
++    uint32_t gpio[XTEINK_BTN_COUNT];
++    /* GPIO input lines of the SoC GPIO model, one per configured button. */
++    qemu_irq line[XTEINK_BTN_COUNT];
++    bool connected;
++} XteinkButtonsState;
++
++static const char xteink_buttons_chars[XTEINK_BTN_COUNT] = {
++    [XTEINK_BTN_BACK]    = 'b',
++    [XTEINK_BTN_CONFIRM] = 'c',
++    [XTEINK_BTN_LEFT]    = 'l',
++    [XTEINK_BTN_RIGHT]   = 'r',
++    [XTEINK_BTN_UP]      = 'u',
++    [XTEINK_BTN_DOWN]    = 'd',
++    [XTEINK_BTN_POWER]   = 'p',
++};
++
++static void xteink_buttons_set_level(XteinkButtonsState *s, int idx, int level)
++{
++    if (!s->line[idx]) {
++        return;
++    }
++    qemu_set_irq(s->line[idx], level);
++}
++
++static void xteink_buttons_release_all(XteinkButtonsState *s)
++{
++    for (int i = 0; i < XTEINK_BTN_COUNT; i++) {
++        /* Active-low buttons: HIGH is the released (pulled-up) state. */
++        xteink_buttons_set_level(s, i, 1);
++    }
++}
++
++/* Connect every configured GPIO number to the matching input line of the
++ * machine's ESP32 GPIO model. The machine instantiates the GPIO device as the
++ * "gpio" child of /machine (see hw/riscv/esp32c3.c). */
++static bool xteink_buttons_connect(XteinkButtonsState *s, Error **errp)
++{
++    Object *machine = qdev_get_machine();
++    Object *gpio_obj;
++    Esp32GpioState *gpio;
++
++    if (s->connected) {
++        return true;
++    }
++    if (!machine) {
++        error_setg(errp, "xteink-buttons: no machine object");
++        return false;
++    }
++
++    gpio_obj = object_resolve_path_component(machine, "gpio");
++    if (!gpio_obj || !object_dynamic_cast(gpio_obj, TYPE_ESP32_GPIO)) {
++        error_setg(errp, "xteink-buttons: ESP32 GPIO device not found "
++                         "(expected the machine child \"gpio\")");
++        return false;
++    }
++
++    gpio = ESP32_GPIO(DEVICE(gpio_obj));
++
++    for (int i = 0; i < XTEINK_BTN_COUNT; i++) {
++        if (s->gpio[i] == ESP_GPIO_PIN_UNSET) {
++            continue;
++        }
++        if (s->gpio[i] >= gpio->num_gpios) {
++            error_setg(errp, "xteink-buttons: GPIO%u is out of range, the SoC "
++                             "has %u pins", s->gpio[i], gpio->num_gpios);
++            return false;
++        }
++        s->line[i] = qdev_get_gpio_in(DEVICE(gpio_obj), s->gpio[i]);
++        /* Idle state: released, the board pulls the line up. */
++        qemu_set_irq(s->line[i], 1);
++    }
++
++    s->connected = true;
++    return true;
++}
++
++static void xteink_buttons_handle_key(XteinkButtonsState *s, uint8_t ch)
++{
++    char lower = g_ascii_tolower(ch);
++    bool press = (ch == (uint8_t)lower);
++
++    if (ch == '-') {
++        xteink_buttons_release_all(s);
++        return;
++    }
++
++    for (int i = 0; i < XTEINK_BTN_COUNT; i++) {
++        if (xteink_buttons_chars[i] == lower) {
++            /* Active-low buttons: pressed drives the line LOW. */
++            xteink_buttons_set_level(s, i, press ? 0 : 1);
++            return;
++        }
++    }
++}
++
++static int xteink_buttons_can_read(void *opaque)
++{
++    return 1;
++}
++
++static void xteink_buttons_receive(void *opaque, const uint8_t *buf, int size)
++{
++    XteinkButtonsState *s = XTEINK_BUTTONS(opaque);
++
++    for (int i = 0; i < size; i++) {
++        xteink_buttons_handle_key(s, buf[i]);
++    }
++    qemu_chr_fe_accept_input(&s->chr);
++}
++
++static void xteink_buttons_realize(DeviceState *dev, Error **errp)
++{
++    XteinkButtonsState *s = XTEINK_BUTTONS(dev);
++
++    if (!qemu_chr_fe_backend_connected(&s->chr)) {
++        error_setg(errp, "xteink-buttons: the 'chardev' property is required");
++        return;
++    }
++
++    if (!xteink_buttons_connect(s, errp)) {
++        return;
++    }
++
++    qemu_chr_fe_set_handlers(&s->chr, xteink_buttons_can_read,
++                             xteink_buttons_receive, NULL, NULL, s, NULL, true);
++}
++
++static void xteink_buttons_reset_hold(Object *obj, ResetType type)
++{
++    xteink_buttons_release_all(XTEINK_BUTTONS(obj));
++}
++
++static Property xteink_buttons_properties[] = {
++    DEFINE_PROP_CHR("chardev", XteinkButtonsState, chr),
++    DEFINE_PROP_UINT32("back-gpio", XteinkButtonsState,
++                       gpio[XTEINK_BTN_BACK], ESP_GPIO_PIN_UNSET),
++    DEFINE_PROP_UINT32("confirm-gpio", XteinkButtonsState,
++                       gpio[XTEINK_BTN_CONFIRM], ESP_GPIO_PIN_UNSET),
++    DEFINE_PROP_UINT32("left-gpio", XteinkButtonsState,
++                       gpio[XTEINK_BTN_LEFT], ESP_GPIO_PIN_UNSET),
++    DEFINE_PROP_UINT32("right-gpio", XteinkButtonsState,
++                       gpio[XTEINK_BTN_RIGHT], ESP_GPIO_PIN_UNSET),
++    DEFINE_PROP_UINT32("up-gpio", XteinkButtonsState,
++                       gpio[XTEINK_BTN_UP], ESP_GPIO_PIN_UNSET),
++    DEFINE_PROP_UINT32("down-gpio", XteinkButtonsState,
++                       gpio[XTEINK_BTN_DOWN], ESP_GPIO_PIN_UNSET),
++    DEFINE_PROP_UINT32("power-gpio", XteinkButtonsState,
++                       gpio[XTEINK_BTN_POWER], ESP_GPIO_PIN_UNSET),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
++static void xteink_buttons_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    ResettableClass *rc = RESETTABLE_CLASS(klass);
++
++    dc->realize = xteink_buttons_realize;
++    dc->desc = "Xteink X3 buttons driven through a chardev";
++    dc->user_creatable = true;
++    device_class_set_props(dc, xteink_buttons_properties);
++    rc->phases.hold = xteink_buttons_reset_hold;
++}
++
++static const TypeInfo xteink_buttons_info = {
++    .name = TYPE_XTEINK_BUTTONS,
++    .parent = TYPE_DEVICE,
++    .instance_size = sizeof(XteinkButtonsState),
++    .class_init = xteink_buttons_class_init,
++};
++
++static void xteink_buttons_register_types(void)
++{
++    type_register_static(&xteink_buttons_info);
++}
++
++type_init(xteink_buttons_register_types)
+--- hw/gpio/meson.build
++++ hw/gpio/meson.build
+@@ -18,7 +18,7 @@
+ system_ss.add(when: 'CONFIG_ASPEED_SOC', if_true: files('aspeed_gpio.c'))
+ system_ss.add(when: 'CONFIG_SIFIVE_GPIO', if_true: files('sifive_gpio.c'))
+ system_ss.add(when: 'CONFIG_XTENSA_ESP32', if_true: files('esp32_gpio.c'))
+-system_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files('esp32_gpio.c', 'esp32c3_gpio.c'))
++system_ss.add(when: 'CONFIG_RISCV_ESP32C3', if_true: files('esp32_gpio.c', 'esp32c3_gpio.c', 'xteink_buttons.c'))
+ system_ss.add(when: 'CONFIG_RISCV_ESP32C5', if_true: files('esp32_gpio.c', 'esp32c3_gpio.c', 'esp32c5_gpio.c'))
+ system_ss.add(when: 'CONFIG_RISCV_ESP32C61', if_true: files('esp32_gpio.c', 'esp32c3_gpio.c', 'esp32c61_gpio.c'))
+ system_ss.add(when: 'CONFIG_RISCV_ESP32H4', if_true: files('esp32_gpio.c', 'esp32c3_gpio.c', 'esp32h4_gpio.c'))

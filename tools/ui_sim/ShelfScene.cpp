@@ -19,12 +19,12 @@ constexpr const char* kAllBooks = "Все книги";
 
 ShelfScene::ShelfScene() {
   books_ = {
-      {{"Война и мир", "Лев Толстой", {}, 12}, "Русская классика", "Проза"},
-      {{"Моби Дик", "Герман Мелвилл", {}, 64}, "Морские романы", "Приключения"},
-      {{"Отцы и дети", "Иван Тургенев", {}, -1}, "Русская классика", "Проза"},
-      {{"Мастер и Маргарита", "Михаил Булгаков", {}, 100}, "", "Мистика"},
-      {{"Преступление и наказание", "Фёдор Достоевский", {}, 37}, "Русская классика", "Проза"},
-      {{"Тихий Дон", "Михаил Шолохов", {}, -1}, "", "Эпопея"},
+      {{"Война и мир", "Лев Толстой", {}, "EPUB", 12}, "Русская классика", "Проза"},
+      {{"Моби Дик", "Герман Мелвилл", {}, "EPUB", 64}, "Морские романы", "Приключения"},
+      {{"Отцы и дети", "Иван Тургенев", {}, "FB2", -1}, "Русская классика", "Проза"},
+      {{"Мастер и Маргарита", "Михаил Булгаков", {}, "FB2", 100}, "", "Мистика"},
+      {{"Преступление и наказание", "Фёдор Достоевский", {}, "EPUB", 37}, "Русская классика", "Проза"},
+      {{"Тихий Дон", "Михаил Шолохов", {}, "TXT", 64}, "", "Эпопея"},
   };
 }
 
@@ -43,7 +43,12 @@ int ShelfScene::pageStart(const shelfui::GridMetrics& metrics) const {
 }
 
 void ShelfScene::useCovers(const std::vector<std::string>& covers) {
-  for (size_t i = 0; i < books_.size() && i < covers.size(); ++i) books_[i].cell.coverPath = covers[i];
+  for (size_t i = 0; i < books_.size() && i < covers.size(); ++i) {
+    // One fixture stays without artwork on purpose: a screenshot must show the
+    // "no cover" cell with the book title, not six identical cover cells.
+    if (i == 1 || i == 5) continue;
+    books_[i].cell.coverPath = covers[i];
+  }
 }
 
 void ShelfScene::applyDemoFilter() {
@@ -199,6 +204,7 @@ void ShelfScene::render(GfxRenderer& renderer) const {
   page.page = capacity > 0 ? start / capacity : 0;
   page.pageCount = std::max(1, (static_cast<int>(view.size()) + capacity - 1) / capacity);
   page.emptyText = "Книг не найдено";
+  page.noCoverText = "Нет обложки";
   shelfui::drawShelfPage(renderer, grid, page);
 
   if (overlay_ != Overlay::None) shelfui::drawOverlayList(renderer, overlayItems(), menuIndex_);

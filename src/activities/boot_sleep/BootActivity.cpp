@@ -22,7 +22,7 @@ void BootActivity::onEnter() {
   renderer.clearScreen();
   renderer.drawImage(Logo120, logoX, logoY, LOGO_SIZE, LOGO_SIZE);
 
-  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, "Paper|io", true, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, "Inkwell", true, EpdFontFamily::BOLD);
   renderer.drawCenteredText(UI_HINT_FONT_ID, pageHeight / 2 + 95, tr(STR_BOOTING));
   renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 30, CROSSPOINT_VERSION);
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);

@@ -105,9 +105,14 @@ TEST(ShelfJson, ForeignVersionIsRejected) {
   index.books.push_back(makeBook("/books/a.epub"));
   std::string payload;
   shelf::serializeIndex(index, payload);
-  const size_t at = payload.find("\"version\":2");
+  // Read the current version out of the document instead of hard-coding it: the
+  // test is about "a version this build does not know", not about the number.
+  const size_t at = payload.find("\"version\":");
   ASSERT_NE(std::string::npos, at);
-  payload.replace(at, std::strlen("\"version\":2"), "\"version\":3");
+  const size_t digits = at + std::strlen("\"version\":");
+  const int version = std::stoi(payload.substr(digits));
+  const std::string from = "\"version\":" + std::to_string(version);
+  payload.replace(at, from.size(), "\"version\":" + std::to_string(version + 1));
 
   shelf::ShelfIndex parsed;
   EXPECT_FALSE(shelf::parseIndex(payload, parsed));

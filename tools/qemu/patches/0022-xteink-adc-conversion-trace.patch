@@ -1,0 +1,40 @@
+--- hw/misc/esp32c3_saradc.c
++++ hw/misc/esp32c3_saradc.c
+@@ -29,6 +29,29 @@
+ 
+ #define SARADC_DEBUG 0
+ 
++/* Board-level trace (XTEINK_ADC_TRACE=1): one line per finished conversion whose
++ * raw value differs from the idle value, i.e. per button actually seen on the
++ * ladder. This is how Q4 proves that an injected press (xteink-buttons,
++ * "<key>-adc") reaches the firmware's analogRead() and not just the chardev.
++ * Idle conversions are filtered out, otherwise the boot polling would flood the
++ * log and hide the interesting samples. */
++static void esp32c3_saradc_trace_conversion(unsigned ch, uint32_t raw,
++                                            uint32_t idle_raw)
++{
++    static int lines;
++    static int enabled = -1;
++
++    if (enabled < 0) {
++        const char *env = getenv("XTEINK_ADC_TRACE");
++        enabled = (env && *env && *env != '0');
++    }
++    if (!enabled || raw == idle_raw || lines++ >= 400) {
++        return;
++    }
++    info_report("[SARADC] ch=%u raw=%u (%u mV approx) — ladder not idle",
++                ch, raw, (unsigned)(raw * 3100 / 4095));
++}
++
+ static void esp32c3_saradc_update_irq(ESP32C3SarAdcState *s)
+ {
+     qemu_set_irq(s->irq, (s->raw_status & s->regs[R_SARADC_INT_ENA]) != 0);
+@@ -48,6 +71,7 @@
+     s->regs[R_SARADC_DATA2] = raw & 0xfff;
+     s->raw_status |= ESP32C3_SARADC_ADC1_DONE | ESP32C3_SARADC_ADC2_DONE;
+     esp32c3_saradc_update_irq(s);
++    esp32c3_saradc_trace_conversion(ch, raw, s->idle_raw);
+ 
+ #if SARADC_DEBUG
+     info_report("[SARADC] conversion done, channel=%u raw=0x%x", ch, raw);

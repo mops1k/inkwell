@@ -8,7 +8,24 @@
 #include "../Activity.h"
 #include "ReadingStats.h"
 
+// Everything the library already knows about the book. Passing it in lets the
+// card paint on the first frame; the full parse (description, exact metadata)
+// then runs on the next loop tick instead of holding the screen on "loading".
+// File-scope, not nested: a nested aggregate with a default member initialiser
+// cannot be used as a default argument inside the enclosing class (C++11).
+struct BookInfoSeed {
+  std::string title;
+  std::string author;
+  std::string series;
+  std::string seriesIndex;
+  std::string genre;
+  std::string coverPath;
+  int progressPercent = -1;
+  BookInfoSeed() = default;
+};
+
 class BookInfoActivity final : public Activity {
+ private:
   // findBook() below needs the history; hold it for this screen only.
   ReadingStatsStore::ScopedLoad statsLoad_;
 
@@ -34,6 +51,9 @@ class BookInfoActivity final : public Activity {
   uint32_t statTotalSeconds = 0;
   uint8_t statProgress = 0;
   time_t statLastReadEpoch = 0;
+  // From the library's own metadata: shown even before the parse finishes, and
+  // the only source of series for formats whose card metadata lacks it.
+  BookInfoSeed seed_;
 
   // Description paging (populated lazily on first render)
   std::vector<std::string> descLines;
@@ -41,6 +61,24 @@ class BookInfoActivity final : public Activity {
   int descPage = 0;
   int descLinesPerPage = 0;
   int descTotalPages = 0;
+
+  // Series neighbours, in reading order (see shelf::collectSeriesBooks). The
+  // card stays a card: Left/Right walk the series instead of leaving the book.
+  struct SeriesBook {
+    std::string path;
+    std::string title;
+    std::string author;
+    std::string series;
+    std::string seriesIndex;
+    std::string genre;
+  };
+  std::vector<SeriesBook> seriesBooks_;
+  int seriesPosition_ = -1;
+  bool hasSeriesSiblings() const { return seriesBooks_.size() > 1 && seriesPosition_ >= 0; }
+  // Rebuilds the sibling list from the library index; called on entry (so the hints
+  // are right on the first frame) and after a parse that learned the series name.
+  void rebuildSeriesSiblings();
+  void walkSeries(int delta);
 
   // Partial-render caches: set on the first full render, reused when only the
   // description page changes.
@@ -57,16 +95,25 @@ class BookInfoActivity final : public Activity {
   static std::string formatFileSize(size_t bytes);
   void renderLoading();
   void loadData();
+  void fillSeedFromIndex();
+  void applySeed();
+  bool hasSeed_ = false;
+  bool parsePending_ = false;
+  bool coverTried_ = false;
   void renderDescriptionAndHints();
   bool supportsCustomCover() const;
+  void openReader();
   void openCoverMenu();
   void openCoverPicker();
   void refreshAfterCoverChange();
 
  public:
   explicit BookInfoActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string filePath,
-                            bool returnToShelf = false)
-      : Activity("BookInfo", renderer, mappedInput), filePath(std::move(filePath)), returnToShelf_(returnToShelf) {}
+                            bool returnToShelf = false, BookInfoSeed seed = BookInfoSeed())
+      : Activity("BookInfo", renderer, mappedInput),
+        filePath(std::move(filePath)),
+        returnToShelf_(returnToShelf),
+        seed_(std::move(seed)) {}
 
   void onEnter() override;
   void loop() override;

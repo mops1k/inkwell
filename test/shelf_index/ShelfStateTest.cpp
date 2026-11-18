@@ -20,6 +20,19 @@ TEST(ShelfState, RoundTripsFilterAndSort) {
   EXPECT_EQ(shelf::SortKey::Author, parsed.sort);
 }
 
+TEST(ShelfState, RoundTripsHiddenBooks) {
+  shelf::LibraryState state;
+  state.hiddenPaths = {"/books/system/readme.txt", "/books/notes.txt"};
+  std::string payload;
+  shelf::serializeLibraryState(state, payload);
+
+  shelf::LibraryState parsed;
+  ASSERT_TRUE(shelf::parseLibraryState(payload, parsed));
+  ASSERT_EQ(parsed.hiddenPaths.size(), 2u);
+  EXPECT_EQ("/books/system/readme.txt", parsed.hiddenPaths[0]);
+  EXPECT_EQ("/books/notes.txt", parsed.hiddenPaths[1]);
+}
+
 TEST(ShelfState, NoFilterRoundTripsAsEmpty) {
   shelf::LibraryState state;
   state.filter.clear();

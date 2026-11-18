@@ -1,0 +1,109 @@
+--- hw/i2c/esp32_i2c.c
++++ hw/i2c/esp32_i2c.c
+@@ -9,6 +9,23 @@
+ static void esp32_i2c_do_transaction(Esp32I2CState * s);
+ static void esp32_i2c_update_irq(Esp32I2CState * s);
+ 
++/* Debug: register-level trace, enabled with ESP32_I2C_TRACE=1. */
++static int esp32_i2c_trace_enabled(void)
++{
++    static int cached = -1;
++    if (cached < 0) {
++        const char *e = getenv("ESP32_I2C_TRACE");
++        cached = (e && *e && *e != '0');
++    }
++    return cached;
++}
++
++#define I2C_TRACE(...) do { \
++    if (esp32_i2c_trace_enabled()) { \
++        fprintf(stderr, "esp32_i2c: " __VA_ARGS__); \
++    } \
++} while (0)
++
+ static void esp32_i2c_reset_hold(Object *obj, ResetType type)
+ {
+     Esp32I2CState * s = Esp32_I2C(obj);
+@@ -53,6 +70,7 @@
+ {
+     Esp32I2CState * s = Esp32_I2C(opaque);
+ 
++    I2C_TRACE("read  +0x%02x\n", (unsigned)addr);
+     switch(addr) {
+     case A_I2C_CTR:
+         return s->ctr_reg;
+@@ -101,8 +119,12 @@
+ {
+     Esp32I2CState * s = Esp32_I2C(opaque);
+ 
++    I2C_TRACE("write +0x%02x = 0x%08" PRIx64 "\n", (unsigned)addr, value);
+     switch(addr) {
+     case A_I2C_CTR:
++        I2C_TRACE("  CTR ms_mode=%d trans_start=%d val=0x%08" PRIx64 "\n",
++                  (int)FIELD_EX32(value, I2C_CTR, MS_MODE),
++                  (int)FIELD_EX32(value, I2C_CTR, TRANS_START), value);
+         if (FIELD_EX32(value, I2C_CTR, MS_MODE) != 1) {
+             error_report("esp32_i2c: slave mode not implemented");
+         }
+@@ -176,9 +198,14 @@
+ static void esp32_i2c_do_transaction(Esp32I2CState * s)
+ {
+     bool stop_or_end = false;
++    I2C_TRACE("do_transaction: cmds %08x %08x %08x %08x tx_cnt=%u rx_cnt=%u\n",
++              s->cmd_reg[0], s->cmd_reg[1], s->cmd_reg[2], s->cmd_reg[3],
++              fifo8_num_used(&s->tx_fifo), fifo8_num_used(&s->rx_fifo));
+     for (int i_cmd = 0; i_cmd < ESP32_I2C_CMD_COUNT && !stop_or_end; ++i_cmd) {
+         uint32_t cmd = s->cmd_reg[i_cmd];
+         char opcode = FIELD_EX32(cmd, I2C_CMD, OPCODE);
++        I2C_TRACE("  cmd[%d] opcode=%d bytes=%d\n", i_cmd, opcode,
++                  (int)FIELD_EX32(cmd, I2C_CMD, BYTE_NUM));
+ 
+         /* The i2c v2 (ESP32-C3) command map swaps READ and STOP. */
+         if (s->riscv_cmd_encoding) {
+--- hw/riscv/esp32c3.c
++++ hw/riscv/esp32c3.c
+@@ -295,6 +295,9 @@
+         qdev_prop_set_uint8(chip, "kind", x3_i2c_chips[i].kind);
+         qdev_prop_set_bit(chip, "wide", x3_i2c_chips[i].wide);
+         qdev_prop_set_uint8(chip, "address", x3_i2c_chips[i].addr);
++        /* Log answered register reads as "[X3I2C] ...", so a boot log shows
++         * which of the three chips the board fingerprint actually found. */
++        qdev_prop_set_bit(chip, "trace", true);
+         qdev_realize_and_unref(chip, BUS(i2c_bus), &error_fatal);
+     }
+ 
+--- hw/ssi/esp32c3_gpspi.c
++++ hw/ssi/esp32c3_gpspi.c
+@@ -21,6 +21,17 @@
+ 
+ #define GPSPI_DEBUG 0
+ 
++/* Q3 debug: one line per transaction, enabled with ESP32_GPSPI_TRACE=1. */
++static int gpspi_trace_enabled(void)
++{
++    static int cached = -1;
++    if (cached < 0) {
++        const char *e = getenv("ESP32_GPSPI_TRACE");
++        cached = (e && *e && *e != '0');
++    }
++    return cached;
++}
++
+ static uint64_t esp32c3_gpspi_read(void *opaque, hwaddr addr, unsigned int size)
+ {
+     ESP32C3GpspiState *s = ESP32C3_GPSPI(opaque);
+@@ -162,6 +173,14 @@
+         data_bytes = GPSPI_FIFO_WORDS * 4;
+     }
+ 
++    if (gpspi_trace_enabled() && s->transactions < 4000) {
++        fprintf(stderr, "[GPSPI2] txn #%llu cmd=%d addr=%d dummy=%d mosi=%d "
++                "miso=%d head=%02x %02x %02x %02x\n",
++                (unsigned long long)s->transactions, cmd_bits, addr_bits,
++                dummy_bits, mosi_bits, miso_bits,
++                fifo[0], fifo[1], fifo[2], fifo[3]);
++    }
++
+     for (i = 0; i < data_bytes; i++) {
+         uint8_t tx = (i < mosi_bytes) ? fifo[i] : 0xff;
+         uint32_t rx = ssi_transfer(s->spi, tx);

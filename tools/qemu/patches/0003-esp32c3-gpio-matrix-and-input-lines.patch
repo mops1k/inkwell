@@ -1,0 +1,245 @@
+--- hw/gpio/esp32_gpio.c
++++ hw/gpio/esp32_gpio.c
+@@ -19,12 +19,34 @@
+ #include "hw/qdev-properties.h"
+ #include "hw/gpio/esp32_gpio.h"
+ 
++/* Translate a GPIO-matrix register address into a pin index.
++ * Returns -1 when @addr does not belong to the per-pin window starting at
++ * @base. */
++static int esp32_gpio_pin_from_addr(Esp32GpioState *s, hwaddr addr,
++                                    uint32_t base)
++{
++    hwaddr off;
++    unsigned pin;
+ 
++    if (!base || addr < base) {
++        return -1;
++    }
++    off = addr - base;
++    if (off % 4) {
++        return -1;
++    }
++    pin = off / 4;
++    if (pin >= s->num_gpios || pin >= ESP_GPIO_MAX_PINS) {
++        return -1;
++    }
++    return pin;
++}
+ 
+ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
+ {
+     Esp32GpioState *s = ESP32_GPIO(opaque);
+     uint64_t r = 0;
++    int pin;
+ 
+     if (addr == s->strap_offset) {
+         r = s->strap_mode;
+@@ -33,9 +55,23 @@
+     } else if (s->enable_off && addr == s->enable_off) {
+         r = s->gpio_enable;
+     } else if (s->in_off && addr == s->in_off) {
+-        /* Output-enabled pins loop back; undriven pins reflect pull-up state */
++        /* Output-enabled pins loop back their output value; pins driven by an
++         * external device show the injected level; all remaining pins follow
++         * the internal pull-up. */
+         r = (s->gpio_out & s->gpio_enable) |
+-            (s->gpio_pullup & ~s->gpio_enable);
++            (s->gpio_in & s->gpio_in_mask) |
++            (s->gpio_pullup & ~s->gpio_enable & ~s->gpio_in_mask);
++    } else if (s->status_off && addr == s->status_off) {
++        r = s->status;
++    } else if ((pin = esp32_gpio_pin_from_addr(s, addr,
++                                               s->func0_in_sel_off)) >= 0) {
++        r = s->func_in_sel[pin];
++    } else if ((pin = esp32_gpio_pin_from_addr(s, addr,
++                                               s->func0_out_sel_off)) >= 0) {
++        r = s->func_out_sel[pin];
++    } else if ((pin = esp32_gpio_pin_from_addr(s, addr,
++                                               s->pin_cfg_off)) >= 0) {
++        r = s->pin_cfg[pin];
+     }
+ 
+     return r;
+@@ -45,6 +81,7 @@
+                        uint64_t value, unsigned int size)
+ {
+     Esp32GpioState *s = ESP32_GPIO(opaque);
++    int pin;
+ 
+     if (s->out_off && addr == s->out_off) {
+         s->gpio_out = (uint32_t)value;
+@@ -58,6 +95,21 @@
+         s->gpio_enable |= (uint32_t)value;
+     } else if (s->enable_w1tc_off && addr == s->enable_w1tc_off) {
+         s->gpio_enable &= ~(uint32_t)value;
++    } else if (s->status_off && addr == s->status_off) {
++        s->status = (uint32_t)value;
++    } else if (s->status_w1ts_off && addr == s->status_w1ts_off) {
++        s->status |= (uint32_t)value;
++    } else if (s->status_w1tc_off && addr == s->status_w1tc_off) {
++        s->status &= ~(uint32_t)value;
++    } else if ((pin = esp32_gpio_pin_from_addr(s, addr,
++                                               s->func0_in_sel_off)) >= 0) {
++        s->func_in_sel[pin] = (uint32_t)value;
++    } else if ((pin = esp32_gpio_pin_from_addr(s, addr,
++                                               s->func0_out_sel_off)) >= 0) {
++        s->func_out_sel[pin] = (uint32_t)value;
++    } else if ((pin = esp32_gpio_pin_from_addr(s, addr,
++                                               s->pin_cfg_off)) >= 0) {
++        s->pin_cfg[pin] = (uint32_t)value;
+     }
+ }
+ 
+@@ -98,6 +150,22 @@
+     .endianness = DEVICE_LITTLE_ENDIAN,
+ };
+ 
++static void esp32_gpio_in_handler(void *opaque, int pin, int level)
++{
++    Esp32GpioState *s = ESP32_GPIO(opaque);
++
++    if (pin < 0 || pin >= ESP_GPIO_MAX_PINS) {
++        return;
++    }
++
++    if (level) {
++        s->gpio_in |= 1u << pin;
++    } else {
++        s->gpio_in &= ~(1u << pin);
++    }
++    s->gpio_in_mask |= 1u << pin;
++}
++
+ static void esp32_gpio_reset_hold(Object *obj, ResetType type)
+ {
+ }
+@@ -115,6 +183,10 @@
+     object_property_set_int(obj, "strap_mode", ESP32_STRAP_MODE_FLASH_BOOT, &error_fatal);
+     s->strap_offset = A_GPIO_STRAP;
+ 
++    /* One input line per pin: an external device (e.g. xteink-buttons) can
++     * drive any GPIO level through qdev_get_gpio_in(). */
++    qdev_init_gpio_in(DEVICE(obj), esp32_gpio_in_handler, ESP_GPIO_MAX_PINS);
++
+     memory_region_init_io(&s->iomem, obj, &gpio_ops, s,
+                           TYPE_ESP32_GPIO, 0x1000);
+     sysbus_init_mmio(sbd, &s->iomem);
+--- include/hw/gpio/esp32_gpio.h
++++ include/hw/gpio/esp32_gpio.h
+@@ -16,6 +16,9 @@
+ 
+ #define ESP_GPIO_MAX_PINS 40
+ 
++/* Value used by SoC-specific init code for a pin that is not wired at all. */
++#define ESP_GPIO_PIN_UNSET 0xffffffffu
++
+ /* IO_MUX register bit definitions */
+ #define ESP_IOMUX_FUN_PD_BIT    7
+ #define ESP_IOMUX_FUN_PU_BIT    8
+@@ -41,6 +44,26 @@
+     uint32_t enable_w1tc_off;
+     uint32_t in_off;        /* GPIO_IN_REG offset */
+ 
++    /* Input lines: one qdev input IRQ per pin (qdev_init_gpio_in).
++     * gpio_in keeps the level currently driven by the external device,
++     * gpio_in_mask marks the pins that have been driven at least once. */
++    uint32_t gpio_in;
++    uint32_t gpio_in_mask;
++
++    /* GPIO matrix registers, one entry per pin */
++    uint32_t func_in_sel[ESP_GPIO_MAX_PINS];  /* FUNC0_IN_SEL_CFG  */
++    uint32_t func_out_sel[ESP_GPIO_MAX_PINS]; /* FUNC0_OUT_SEL_CFG */
++    uint32_t pin_cfg[ESP_GPIO_MAX_PINS];      /* PINx_CNF          */
++
++    /* Interrupt status */
++    uint32_t status;
++    uint32_t status_off;         /* GPIO_STATUS_REG offset */
++    uint32_t status_w1ts_off;    /* GPIO_STATUS_W1TS_REG offset */
++    uint32_t status_w1tc_off;    /* GPIO_STATUS_W1TC_REG offset */
++    uint32_t func0_in_sel_off;   /* FUNC0_IN_SEL_CFG base offset */
++    uint32_t func0_out_sel_off;  /* FUNC0_OUT_SEL_CFG base offset */
++    uint32_t pin_cfg_off;        /* PIN0_CNF base offset */
++
+     /* IO_MUX state */
+     uint32_t iomux_regs[ESP_GPIO_MAX_PINS];
+     uint32_t num_gpios;
+--- hw/gpio/esp32c3_gpio.c
++++ hw/gpio/esp32c3_gpio.c
+@@ -22,8 +22,26 @@
+ 
+ static void esp32c3_gpio_init(Object *obj)
+ {
++    Esp32GpioState *s = ESP32_GPIO(obj);
++
+     /* Set the default value for the property */
+     object_property_set_int(obj, "strap_mode", ESP32C3_STRAP_MODE_FLASH_BOOT, &error_fatal);
++
++    /* GPIO-region layout of the ESP32-C3 GPIO matrix */
++    s->num_gpios = ESP32C3_GPIO_NUM_PINS;
++    s->out_off = ESP32C3_GPIO_OUT_OFF;
++    s->out_w1ts_off = ESP32C3_GPIO_OUT_W1TS_OFF;
++    s->out_w1tc_off = ESP32C3_GPIO_OUT_W1TC_OFF;
++    s->enable_off = ESP32C3_GPIO_ENABLE_OFF;
++    s->enable_w1ts_off = ESP32C3_GPIO_ENABLE_W1TS_OFF;
++    s->enable_w1tc_off = ESP32C3_GPIO_ENABLE_W1TC_OFF;
++    s->in_off = ESP32C3_GPIO_IN_OFF;
++    s->status_off = ESP32C3_GPIO_STATUS_OFF;
++    s->status_w1ts_off = ESP32C3_GPIO_STATUS_W1TS_OFF;
++    s->status_w1tc_off = ESP32C3_GPIO_STATUS_W1TC_OFF;
++    s->pin_cfg_off = ESP32C3_GPIO_PIN0_CNF_OFF;
++    s->func0_in_sel_off = ESP32C3_GPIO_FUNC0_IN_SEL_CFG_OFF;
++    s->func0_out_sel_off = ESP32C3_GPIO_FUNC0_OUT_SEL_CFG_OFF;
+ }
+ 
+ /* If we need to override any function from the parent (reset, realize, ...), it shall be done
+--- include/hw/gpio/esp32c3_gpio.h
++++ include/hw/gpio/esp32c3_gpio.h
+@@ -15,6 +15,25 @@
+ #define ESP32C3_STRAP_MODE_UART_BOOT  0x2   /* Diagnostic Mode0+UART0 download Mode */
+ #define ESP32C3_STRAP_MODE_USB_BOOT   0x0   /* Diagnostic Mode1+USB download Mode */
+ 
++/* ESP32-C3 has 22 GPIO pins (GPIO0..GPIO21) */
++#define ESP32C3_GPIO_NUM_PINS 22
++
++/* Register offsets inside the GPIO peripheral (DR_REG_GPIO_BASE).
++ * Source: ESP-IDF components/soc/esp32c3/register/soc/gpio_reg.h */
++#define ESP32C3_GPIO_OUT_OFF               0x04
++#define ESP32C3_GPIO_OUT_W1TS_OFF          0x08
++#define ESP32C3_GPIO_OUT_W1TC_OFF          0x0c
++#define ESP32C3_GPIO_ENABLE_OFF            0x20
++#define ESP32C3_GPIO_ENABLE_W1TS_OFF       0x24
++#define ESP32C3_GPIO_ENABLE_W1TC_OFF       0x28
++#define ESP32C3_GPIO_IN_OFF                0x3c
++#define ESP32C3_GPIO_STATUS_OFF            0x44
++#define ESP32C3_GPIO_STATUS_W1TS_OFF       0x48
++#define ESP32C3_GPIO_STATUS_W1TC_OFF       0x4c
++#define ESP32C3_GPIO_PIN0_CNF_OFF          0x74   /* +4 per pin */
++#define ESP32C3_GPIO_FUNC0_IN_SEL_CFG_OFF  0x154  /* +4 per pin */
++#define ESP32C3_GPIO_FUNC0_OUT_SEL_CFG_OFF 0x554  /* +4 per pin */
++
+ typedef struct ESP32C3State {
+     Esp32GpioState parent;
+ } ESP32C3GPIOState;
+--- hw/riscv/esp32c3.c
++++ hw/riscv/esp32c3.c
+@@ -503,11 +503,15 @@
+                            qdev_get_gpio_in(intmatrix_dev, ETS_UART0_INTR_SOURCE + i));
+     }
+ 
+-    /* GPIO realization */
++    /* GPIO realization: GPIO matrix (region 0) + IO_MUX (region 1) */
+     {
+-        sysbus_realize(SYS_BUS_DEVICE(&ms->gpio), &error_fatal);
+-        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(&ms->gpio), 0);
+-        memory_region_add_subregion_overlap(sys_mem, DR_REG_GPIO_BASE, mr, 0);
++        SysBusDevice *gpio = SYS_BUS_DEVICE(&ms->gpio);
++
++        sysbus_realize(gpio, &error_fatal);
++        memory_region_add_subregion_overlap(sys_mem, DR_REG_GPIO_BASE,
++                                            sysbus_mmio_get_region(gpio, 0), 0);
++        memory_region_add_subregion_overlap(sys_mem, DR_REG_IO_MUX_BASE,
++                                            sysbus_mmio_get_region(gpio, 1), 0);
+     }
+ 
+     /* (Extmem) Cache realization */

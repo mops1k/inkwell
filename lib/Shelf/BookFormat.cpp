@@ -53,4 +53,23 @@ BookFormat detectBookFormat(const std::string& path) {
   return BookFormat::Unknown;
 }
 
+bool formatHasArtwork(BookFormat format) {
+  switch (format) {
+    case BookFormat::Epub:
+    case BookFormat::Fb2:
+    case BookFormat::Fb2Zip:
+    case BookFormat::Xtc:
+      // EPUB/FB2 carry an embedded cover; XTC is a page image format, so its first
+      // page is legitimate artwork.
+      return true;
+    case BookFormat::Txt:
+    case BookFormat::Markdown:
+    case BookFormat::Unknown:
+      // Plain text has no picture at all. Asking the cover pipeline for one used to
+      // produce a garbage bitmap on the shelf; the grid draws its title plate now.
+      return false;
+  }
+  return false;
+}
+
 }  // namespace shelf

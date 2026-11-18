@@ -8,14 +8,17 @@
 
 set(SHELF_TEST_SOURCES
   ShelfFormatTest.cpp
+  ShelfFormatArtworkTest.cpp
   ShelfNameMetaTest.cpp
   ShelfJsonTest.cpp
   ShelfStoreTest.cpp
   ShelfIndexerTest.cpp
   ShelfCoverPolicyTest.cpp
+  ShelfCoverQueueTest.cpp
   ShelfLibraryQueryTest.cpp
   ShelfStateTest.cpp
   ShelfFb2MetadataTest.cpp
+  ShelfFb2CoverTest.cpp
   ShelfXtcMetadataTest.cpp
   ShelfEpubMetadataTest.cpp
   ${REPO_ROOT}/test/epub_pipeline/LoggingImpl.cpp
@@ -28,9 +31,11 @@ set(SHELF_TEST_SOURCES
   ${REPO_ROOT}/lib/Shelf/ShelfIndexStore.cpp
   ${REPO_ROOT}/lib/Shelf/ShelfIndexer.cpp
   ${REPO_ROOT}/lib/Shelf/CoverPolicy.cpp
+  ${REPO_ROOT}/lib/Shelf/CoverQueue.cpp
   ${REPO_ROOT}/lib/Shelf/LibraryQuery.cpp
   ${REPO_ROOT}/lib/Shelf/ShelfStateStore.cpp
   ${REPO_ROOT}/lib/Shelf/Fb2Metadata.cpp
+  ${REPO_ROOT}/lib/Shelf/Fb2Cover.cpp
   ${REPO_ROOT}/lib/Shelf/XtcMetadata.cpp
   ${REPO_ROOT}/lib/Shelf/BookMetadata.cpp
   # The upstream wrapper that now delegates archive sniffing to lib/Shelf.

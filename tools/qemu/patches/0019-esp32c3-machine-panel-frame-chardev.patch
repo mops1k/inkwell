@@ -1,0 +1,85 @@
+--- hw/riscv/esp32c3.c
++++ hw/riscv/esp32c3.c
+@@ -11,6 +11,8 @@
+ #include "qemu/log.h"
+ #include "qemu/error-report.h"
+ #include "hw/qdev-properties.h"
++#include "hw/qdev-properties-system.h"
++#include "chardev/char.h"
+ #include "qemu/units.h"
+ #include "qemu/datadir.h"
+ #include "qapi/error.h"
+@@ -101,6 +103,12 @@
+     ESP32C3UsbJtagState jtag;
+     ESPRgbState rgb;
+     Esp32C3TWAIState twai;
++
++    /* Optional frame sink for the e-paper panel model: the id of a chardev to
++     * attach, given as -machine esp32c3,xteink-panel=<id>. The machine builds
++     * the panel itself and -global cannot address a type name with a dot in it
++     * ("xteink.uc8253"), so the id is resolved with qemu_chr_find() at init. */
++    char *panel_chr_id;
+ };
+ 
+ /* Fake register used by ESP-IDF application to determine whether the code is running on real hardware or on QEMU */
+@@ -309,6 +317,16 @@
+ 
+     /* UC8253 e-paper panel */
+     panel = qdev_new(TYPE_XTEINK_UC8253);
++    /* Frames go to the chardev named by -machine esp32c3,xteink-panel=<id>
++     * (see tools/qemu/README.md: one record per DISPLAY_REFRESH). */
++    if (ms->panel_chr_id && *ms->panel_chr_id) {
++        Chardev *chr = qemu_chr_find(ms->panel_chr_id);
++        if (!chr) {
++            error_setg(&error_fatal, "xteink-panel: no chardev with id \"%s\"",
++                       ms->panel_chr_id);
++        }
++        qdev_prop_set_chr(panel, "chardev", chr);
++    }
+     qdev_realize_and_unref(panel, BUS(spi_bus), &error_fatal);
+     qdev_connect_gpio_out(gpio, 21,
+                           qdev_get_gpio_in_named(panel, SSI_GPIO_CS, 0));
+@@ -817,10 +835,30 @@
+ }
+ 
+ 
++/* Machine properties. Machines are not TYPE_DEVICE, so these use the QOM string
++ * property API rather than DEFINE_PROP_* (-machine key=value resolves through
++ * object_property_set_str). */
++static char *esp32c3_machine_get_panel(Object *obj, Error **errp)
++{
++    Esp32C3MachineState *ms = ESP32C3_MACHINE(obj);
++
++    return g_strdup(ms->panel_chr_id ? ms->panel_chr_id : "");
++}
++
++static void esp32c3_machine_set_panel(Object *obj, const char *value,
++                                      Error **errp)
++{
++    Esp32C3MachineState *ms = ESP32C3_MACHINE(obj);
++
++    g_free(ms->panel_chr_id);
++    ms->panel_chr_id = g_strdup(value);
++}
++
+ /* Initialize machine type */
+ static void esp32c3_machine_class_init(ObjectClass *oc, void *data)
+ {
+     MachineClass *mc = MACHINE_CLASS(oc);
++
+     mc->desc = "Espressif ESP32-C3 machine";
+     mc->default_cpu_type = TYPE_ESP_RISCV_CPU;
+     mc->init = esp32c3_machine_init;
+@@ -828,6 +866,12 @@
+     mc->default_cpus = 1;
+     // 0x4f600
+     mc->default_ram_size = 400 * 1024;
++    /* Frame dump sink of the e-paper panel, e.g.
++     *   -chardev file,id=xteink-panel,path=build/qemu/frame.bin
++     *   -machine esp32c3,xteink-panel=xteink-panel */
++    object_class_property_add_str(oc, "xteink-panel",
++                                  esp32c3_machine_get_panel,
++                                  esp32c3_machine_set_panel);
+ }
+ 
+ /* Create a new type of machine ("child class") */
