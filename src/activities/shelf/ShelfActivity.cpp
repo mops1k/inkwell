@@ -341,12 +341,16 @@ void ShelfActivity::render(RenderLock&&) {
     // exactly like Home on Lyra: four long labels overflow the 528px row. While
     // an overlay is open Back closes it and Confirm picks, so the hints change
     // with the mode instead of advertising grid navigation that does nothing.
+    // All four front captions are always shown: inside an overlay Left/Right move the
+    // highlight exactly like Up/Down, so blanking their labels hid working buttons.
     const auto labels = overlay_ == Overlay::None
                             ? mappedInput.mapLabels(tr(STR_MENU), tr(STR_OPEN), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT))
-                            : mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), "", "");
+                            : mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    GUI.drawSideButtonHints(renderer, overlay_ == Overlay::None ? tr(STR_DIR_UP) : "",
-                            overlay_ == Overlay::None ? tr(STR_DIR_DOWN) : "");
+    // Up/Down keep working inside every overlay (they move the highlighted row), so the
+    // side captions stay on screen instead of vanishing: hiding them made the popover
+    // look as if the side buttons did nothing.
+    GUI.drawSideButtonHints(renderer, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   } else {
     const char* text = mode_ == Mode::Scanning ? tr(STR_SHELF_SCANNING) : tr(STR_LOADING);
     const int width = renderer.getTextWidth(UI_12_FONT_ID, text);
