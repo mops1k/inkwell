@@ -1329,6 +1329,91 @@ reverse=0 pre_q4_mismatch=0 pre_q4_skipped=0` (26 патчей, 27 затрон�
   кнопке), а не эмулятора: чтобы UI появился на первом boot, кнопку Power надо держать при
   старте.
 
+## Q9: сетевые экраны — радио нет, но и перезагрузки нет (проверено 19.11.2026)
+
+Итог этапа одной строкой: **сетевые функции больше не перезагружают эмулятор.** Причина
+перезагрузки — не прошивка и не драйвер, а модель: у `esp32c3` в QEMU нет WiFi MAC/PHY, а
+прошивка на первом же `esp_wifi_init()` ловит ассерт IDF и уходит в `rst:0xc`.
+
+### Как воспроизвести и проверить
+
+```bash
+tools/qemu/net-scenarios.py --scenario wifi      # «Настройки → Система → Wi-Fi сети»
+tools/qemu/net-scenarios.py --scenario hotspot   # «Передача файлов → Создать точку доступа»
+tools/qemu/net-scenarios.py                      # оба сценария, ~60 с
+```
+
+Артефакты — `build/qemu/net/`: `frame-wifi-error.png`, `frame-back-in-settings.png`,
+`frame-hotspot-after.png`, `uart.log`, `boot.log`, `report.json`, `report.md`.
+Успех (до фикса оба сценария его не дают):
+
+```
+NET OK: frames=… reboots=0 checks=… failures=0
+```
+
+### Причина: SYSCON-регистр гейтов модема читается нулём, IDF на это ассертит
+
+До фикса нажатие Confirm на «Wi-Fi сети» не рисовало экран, а перезагружало чип. `uart.log`:
+
+```
+assert failed: esp_phy_enable phy_init.c:310 (phy_module_has_clock_bits(PHY_INIT_MODEM_CLOCK_REQUIRED_BITS))
+MEPC : 0x40387d82  RA : 0x40387d46  MCAUSE : 0x00000002
+… Rebooting …
+rst:0xc (RTC_SW_CPU_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)
+```
+
+- `addr2line` по `0x40387d82` → `panic_abort` (`components/esp_system/panic.c:491`), то есть
+  ассерт, а не паника от неверного доступа;
+- `phy_module_has_clock_bits` (`0x403820c2`) дизассемблируется в
+  `lui a5,0x60026; lw a5,20(a5)` — прошивка читает **SYSCON+0x14 (0x60026014)** и требует,
+  чтобы были выставлены биты модемных клоков (`0x789000`-маска, `PHY_INIT_MODEM_CLOCK_REQUIRED_BITS`);
+- в модели этого блока нет: чтение уходит в catch-all `esp32c3_io_read()` и возвращает 0.
+  Через QMP: `xp /1wx 0x60026014` → `0x00000000`, при этом `xp /1wx 0x600263f8` (маркер
+  QEMU в SYSCON) → `0x51454d55` (`'QEMU'`).
+
+То есть ассерт — честная реакция IDF на плату без радио, а не дефект прошивки.
+
+### Почему не патч модели
+
+Полноценная модель WiFi MAC/PHY (регистры `0x60033000…`, DMA, калибровка PHY) — это не
+«минимальный патч», и в QEMU её нет даже у Espressif: машина C3 заводит только `open_eth`
+(`qemu_create_nic_device("open_eth", …)`), а прошивка Ethernet не использует вовсе, и
+x3emu не передаёт никаких `-nic`/`-netdev`. Фальшивые «клоки включены» только сдвинули бы
+ассерт глубже — в калибровку PHY, которая ждёт реального железа, то есть получился бы не
+чистый отказ, а WDT-зависание. Поэтому радиото в эмуляторе принципиально нет, и цель —
+внятное поведение прошивки.
+
+### Что изменено в прошивке
+
+- `src/network/WifiRadioGuard.{h,cpp}` — одна точка входа: `wifiRadioAvailable()` читает
+  маркер QEMU в SYSCON (`0x600263F8`, слово `'QEMU'`) и возвращает, есть ли радио;
+  `__wrap_esp_wifi_init()` (линкуется флагом `-Wl,--wrap=esp_wifi_init` в `[env:default]`)
+  при отсутствии радио отдаёт `ESP_ERR_NOT_SUPPORTED` **до** обращения к железу. Так
+  `WiFi.mode()`/`WiFi.scanNetworks()`/`WiFi.softAP()`/OTA/sync падают штатными путями
+  Arduino-обёртки. На реальном чипе маркер не совпадает — обёртка просто вызывает
+  настоящий `esp_wifi_init()`.
+- `src/activities/network/WifiSelectionActivity.cpp` — экран Wi-Fi при отсутствии радио
+  переходит в состояние `CONNECTION_FAILED` с текстом `STR_WIFI_RADIO_MISSING`
+  («No WiFi radio on this board (emulator)» / «На этой плате нет радио Wi-Fi (эмулятор)»),
+  Back/Confirm сразу выходят, а не предлагают скан, который не может работать.
+- `src/activities/network/CrossPointWebServerActivity.cpp` — режим «Создать точку доступа»
+  при отсутствии радио выходит до `showServerScreenAndReleaseBuffers()`, чтобы не отдать
+  зря оба фреймбуфера и не получить пустую панель.
+- `lib/I18n/translations/{english,russian}.yaml` + `scripts/gen_i18n.py` — новая строка
+  `STR_WIFI_RADIO_MISSING` (сгенерированные `lib/I18n/I18nKeys.h`/`I18nStrings.*` в git не
+  лежат).
+
+### Ограничения (Q9)
+
+- реальный сетевой обмен (OPDS, KOReader, OTA, веб-сервер) в QEMU **не проверить** — нет ни
+  радио, ни lwIP-транспорта; проверяется только путь «радио нет»: экран с ошибкой, без
+  перезагрузки;
+- проверка «есть ли радио» опирается на маркер QEMU в SYSCON. Это единственный признак,
+  который отличает эмулятор от кремния; на железе чтение этого адреса возвращает не `'QEMU'`
+  и ничего не меняет;
+- сценарий не проверяет текст ошибки OCR-ом: он проверяет, что кадр сменился, что в нём есть
+  содержимое, что Back возвращает в настройки и что счётчик загрузок не вырос.
+
 ## Что осталось для «полной эмуляции» (оценка по итогам разведки)
 
 1. **GP-SPI2 (SPI2) + SD** — сделано в Q2/Q3/Q4 (патчи 0008, 0012, 0014, 0015, 0021):

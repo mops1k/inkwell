@@ -19,6 +19,7 @@
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/WifiRadioGuard.h"
 #include "util/QrUtils.h"
 
 namespace {
@@ -154,6 +155,15 @@ void WifiSelectionActivity::onExit() {
 }
 
 void WifiSelectionActivity::startWifiScan() {
+  // A board without a radio (the QEMU model) must not be asked to init it: the
+  // call aborts inside esp_phy_enable() and reboots the chip. Say so instead.
+  if (!wifiRadioAvailable()) {
+    autoConnecting = false;
+    state = WifiSelectionState::CONNECTION_FAILED;
+    connectionError = tr(STR_WIFI_RADIO_MISSING);
+    requestUpdate();
+    return;
+  }
   autoConnecting = false;
   // autoCycleAfterScan intentionally preserved when set by the auto-cycle flow
   state = WifiSelectionState::SCANNING;
@@ -348,6 +358,14 @@ void WifiSelectionActivity::selectNetwork(const int index) {
 }
 
 void WifiSelectionActivity::attemptConnection() {
+  // Same reason as startWifiScan(): never touch a radio that isn't there.
+  if (!wifiRadioAvailable()) {
+    autoConnecting = false;
+    state = WifiSelectionState::CONNECTION_FAILED;
+    connectionError = tr(STR_WIFI_RADIO_MISSING);
+    requestUpdate();
+    return;
+  }
   state = autoConnecting ? WifiSelectionState::AUTO_CONNECTING : WifiSelectionState::CONNECTING;
   connectionStartTime = millis();
   connectedIP.clear();
@@ -754,6 +772,12 @@ void WifiSelectionActivity::loop() {
   if (state == WifiSelectionState::CONNECTION_FAILED) {
     if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
         mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+      // Without a radio there is nothing to retry: leave instead of bouncing
+      // into the network list (which would offer a scan that cannot run).
+      if (!wifiRadioAvailable()) {
+        onComplete(false);
+        return;
+      }
       // If we were auto-connecting or using a saved credential, offer to forget
       // the network
       if (autoConnecting || usedSavedPassword) {

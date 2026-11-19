@@ -23,6 +23,7 @@
 #include "activities/network/SignalStrengthWidget.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/WifiRadioGuard.h"
 #include "util/QrUtils.h"
 
 namespace {
@@ -154,6 +155,14 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
                            });
   } else {
     // AP mode - start access point
+    if (!wifiRadioAvailable()) {
+      // No radio (the QEMU model): the access point cannot start, and the AP
+      // path deliberately releases the frame buffers first, so bail out before
+      // that instead of failing halfway through with a blank panel.
+      LOG_ERR("WEBACT", "No WiFi radio on this board: hotspot mode unavailable");
+      onGoHome();
+      return;
+    }
     state = WebServerActivityState::AP_STARTING;
     requestUpdate();
     startAccessPoint();
