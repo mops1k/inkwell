@@ -1,0 +1,130 @@
+--- include/hw/riscv/esp32c3_clk.h
++++ include/hw/riscv/esp32c3_clk.h
+@@ -54,6 +54,13 @@
+     uint32_t bt_lpck_div_int;
+     uint32_t bt_lpck_div_frac;
+ 
++    /* RTC fast-memory CRC engine (SYSTEM_RTC_FASTMEM_CONFIG/CRC). The C3 deep
++     * sleep path starts a CRC over RTC fast memory and busy-waits for
++     * RTC_MEM_CRC_FINISH with interrupts disabled, so the start has to
++     * complete. */
++    uint32_t rtc_fastmem_config;
++    uint32_t rtc_fastmem_crc;
++
+ 
+     /* IRQs for crosscore interrupts */
+     qemu_irq irqs[ESP32C3_SYSTEM_CPU_INTR_COUNT];
+--- hw/riscv/esp32c3_clk.c
++++ hw/riscv/esp32c3_clk.c
+@@ -74,6 +74,12 @@
+         case A_SYSTEM_EXTERNAL_DEVICE_ENCRYPT_DECRYPT_CONTROL:
+             r = s->sys_ext_dev_enc_dec_ctrl;
+             break;
++        case A_SYSTEM_RTC_FASTMEM_CONFIG:
++            r = s->rtc_fastmem_config;
++            break;
++        case A_SYSTEM_RTC_FASTMEM_CRC:
++            r = s->rtc_fastmem_crc;
++            break;
+         default:
+ #if CLOCK_WARNING
+             warn_report("[CLOCK] Unsupported read from %08lx\n", addr);
+@@ -104,6 +110,31 @@
+         case A_SYSTEM_BT_LPCK_DIV_FRAC:
+             s->bt_lpck_div_frac = value & 0x1FFFFFFF;
+             break;
++        case A_SYSTEM_RTC_FASTMEM_CONFIG:
++            /* The C3 deep sleep path computes a CRC over RTC fast memory with
++             * the hardware engine and then polls RTC_MEM_CRC_FINISH:
++             *
++             *     sw  0x7ff000, 0x600c0048   # address 0, length 0x7ff
++             *     sw  0x7ff100, 0x600c0048   # + RTC_MEM_CRC_START (bit 8)
++             *   .Lwaitcrc:
++             *     lw  t0, 0x600c0048
++             *     and t0, t0, 0x80000000     # RTC_MEM_CRC_FINISH
++             *     beqz t0, .Lwaitcrc
++             *
++             * With the register unimplemented the read always returned 0 and
++             * the loop never ended: the CPU spun with interrupts disabled
++             * until the interrupt watchdog panicked ("Interrupt wdt timeout on
++             * CPU0", rst 0xc) and rebooted the chip (Q8). Complete the request
++             * at once instead; the value itself is only stored into
++             * RTC_CNTL's RTC_MEMORY_CRC_REG and is never compared, because the
++             * firmware registers no RTC wake stub. */
++            s->rtc_fastmem_config =
++                value & ~R_SYSTEM_RTC_FASTMEM_CONFIG_RTC_MEM_CRC_FINISH_MASK;
++            if (FIELD_EX32(value, SYSTEM_RTC_FASTMEM_CONFIG, RTC_MEM_CRC_START)) {
++                s->rtc_fastmem_config |= R_SYSTEM_RTC_FASTMEM_CONFIG_RTC_MEM_CRC_FINISH_MASK;
++                s->rtc_fastmem_crc = 0;
++            }
++            break;
+         default:
+ #if CLOCK_WARNING
+             warn_report("[CLOCK] Unsupported write to %08lx (%08lx)\n", addr, value);
+@@ -136,6 +167,10 @@
+     s->bt_lpck_div_int = 0xFF;
+     s->bt_lpck_div_frac = 0x02001001;
+ 
++    /* No CRC over RTC fast memory has been requested yet. */
++    s->rtc_fastmem_config = 0;
++    s->rtc_fastmem_crc = 0;
++
+     /* Initialize the IRQs */
+     s->levels = 0;
+     for (int i = 0 ; i < ESP32C3_SYSTEM_CPU_INTR_COUNT; i++) {
+--- include/hw/misc/esp32c3_rtc_cntl.h
++++ include/hw/misc/esp32c3_rtc_cntl.h
+@@ -49,6 +49,9 @@
+     MemoryRegion iomem;
+ 
+     uint32_t options0;
++    /* RTC_CNTL_STATE0: sleep request. Read back so the guest sees what it
++     * wrote; SLEEP_EN itself is consumed (the wake is modelled as a reset). */
++    uint32_t state0;
+     uint32_t scratch_reg[ESP32C3_RTC_CNTL_SCRATCH_REG_COUNT];
+ 
+     ESP32C3ResetReason reason;
+--- hw/misc/esp32c3_rtc_cntl.c
++++ hw/misc/esp32c3_rtc_cntl.c
+@@ -45,6 +45,9 @@
+         case A_RTC_CNTL_RTC_OPTIONS0:
+             r = s->options0;
+             break;
++        case A_RTC_CNTL_RTC_STATE0:
++            r = s->state0;
++            break;
+         case A_RTC_CNTL_RTC_RESET_STATE:
+             r = s->reason;
+             break;
+@@ -92,6 +95,23 @@
+             }
+             break;
+ 
++        case A_RTC_CNTL_RTC_STATE0:
++            /* The last thing both sleep paths do is set RTC_CNTL_SLEEP_EN and
++             * then poll RTC_CNTL_INT_RAW for a sleep-reject/wakeup interrupt,
++             * which never arrives on a real chip: the digital core is powered
++             * down instead. There is no such state in an emulator, so model the
++             * wake: reset the machine, and let the RTC reset register report
++             * ESP_RST_DEEPSLEEP the way a real wake does. Without this the
++             * guest spins in that poll loop with interrupts disabled until the
++             * interrupt watchdog panics (Q8). */
++            if (FIELD_EX32(c_value, RTC_CNTL_RTC_STATE0, SLEEP_EN)) {
++                info_report("[RTCCNTL] sleep requested (STATE0.SLEEP_EN) -> RTC reset, deep-sleep cause");
++                esp32c3_reset_request(opaque, ESP32C3_DEEPSLEEP_RESET, 1);
++                break;
++            }
++            s->state0 = c_value;
++            break;
++
+         case A_RTC_CNTL_RTC_STORE0:
+         case A_RTC_CNTL_RTC_STORE1:
+         case A_RTC_CNTL_RTC_STORE2:
+@@ -128,6 +148,7 @@
+     static bool first_boot = true;
+     ESP32C3RtcCntlState *s = ESP32C3_RTC_CNTL(obj);
+     s->options0 = 0;
++    s->state0 = 0;
+ 
+     if (first_boot) {
+         s->reason = ESP32C3_POWERON_RESET;

@@ -65,6 +65,7 @@ ninja -C build qemu-system-riscv32
 | `0023-qemu-ssi-sd-spi-write.patch` | **Q6:** `ssi-sd` умеет писать в SPI-режиме: `CMD24`/`CMD25` с приёмом DATA-токена `0xFE`/`0xFC` и 512 байт, `STOP_TRANSMISSION` (`CMD12`/токен `0xFD`), data response token `0x05`, BUSY-фаза после блока, трасса `data token`/`data=512 write done`. Корень проблемы — переход из состояния ответа происходил на байт позже, поэтому токен съедался |
 | `0024-qemu-sd-spi-r1-and-status.patch` | **Q6:** `sd.c` в SPI-режиме отвечает настоящим R1 даже на illegal-команду (раньше отдавал 0 байт, и `ssi-sd` подставлял `0x04`), а `CMD13` в SPI отдаёт 32-битный статус (из него `ssi-sd` собирает R2 из 2 байт), а не 16 байт CSD |
 | `0025-xteink-uc8253-screen-state-and-4level-frame.patch` | **Q7:** панель хранит не только обе RAM-плоскости, но и **скомпонованный экран** (2 бита на пиксель: 0 paper / 1 light gray / 2 dark gray / 3 black) и отдаёт его в записи кадра как плоскости 3–4 (`planes=4`, `version=2`, флаг `0x2` = «refresh был 4-градационным»). Плюс распознавание 4-градационной пары по хвосту транзакции: `DTM1` (LSB) и сразу за ним `DTM2` (MSB), причём первый payload — не константная заливка `0xFF`. Раньше читалка выглядела чёрной, потому что инструменты рендерили код AA-плоскостей как BW-картинку |
+| `0026-esp32c3-deep-sleep-crc-and-wake.patch` | **Q8, фикс холодной паники:** SYSTEM-блок C3 получает `SYSTEM_RTC_FASTMEM_CONFIG`/`RTC_FASTMEM_CRC` (запрос CRC по RTC fast memory завершается сразу — выставляется `RTC_MEM_CRC_FINISH`, который опрашивает `rtc_deep_sleep_start()`), а запись `RTC_CNTL_STATE0.SLEEP_EN` моделируется как реальное пробуждение: сброс машины с причиной `ESP32C3_DEEPSLEEP_RESET` (`rst:0x5 (DSLEEP)`). Без этого глубокий сон (а прошивка уходит в него на холодной загрузке, когда wake-gate отклоняет незажатый Power) навсегда зависал в `rtc_sleep.c:302`, ловил interrupt watchdog (`Guru Meditation … Interrupt wdt timeout on CPU0`, `rst:0xc`) и перезагружал чип |
 
 Патчи 0005–0007 — этап Q1 (АЦП-кнопки и GPIO-прерывания), их детали в разделах ниже.
 Патчи 0008–0012 — этап Q2 (NVS, GP-SPI2, панель, SD, I2C-фингерпринт).
@@ -72,10 +73,11 @@ ninja -C build qemu-system-riscv32
 патчи 0017–0022 — этап Q4 (BUSY/IRQ, кадр в PNG, SD с FAT, трасса газ-гейджа, кнопки);
 патчи 0023–0024 — этап Q6 (запись на microSD, R1/CMD13 в SPI);
 патч 0025 — этап Q7 (скомпонованный экран панели и 4-градационный кадр читалки);
-подробности — в разделах «Q3», «Q4», «Q6» и «Q7».
+патч 0026 — этап Q8 (CRC RTC fast memory и пробуждение из deep sleep);
+подробности — в разделах «Q3», «Q4», «Q6», «Q7» и «Q8».
 
-Набор 0001..0025 применяется по порядку с нуля (`patch -p0` из корня дерева). Проверено
-19.11.2026 на чистой распаковке тарбола: все 25 патчей — `patch` без ошибок, затронутые файлы
+Набор 0001..0026 применяется по порядку с нуля (`patch -p0` из корня дерева). Проверено
+19.11.2026 на чистой распаковке тарбола: все 26 патчей — `patch` без ошибок, затронутые файлы
 после применения совпадают md5 с рабочим деревом, а обратный откат 0025..0017 возвращает
 файлы Q4/Q5/Q6/Q7 к pre-Q4 состоянию (см. «Q7», блок проверки round-trip).
 
@@ -1254,6 +1256,79 @@ tools/qemu/reader-screen.py --check-dump build/qemu/ui/frame.bin --frame 36   # 
   обложек и не двигает выделение (наблюдалось 3 раза из 5). `reader-screen.py` поэтому делает
   до 3 попыток, сдвигая выделение, и требует страницу текста на каждой;
 
+## Q8: холодные паники при холодной загрузке — CRC RTC fast memory и deep sleep (19.11.2026)
+
+Итог этапа одной строкой: **холодной паники больше нет.** Причина была в модели, а не в
+прошивке: на холодной загрузке QEMU прошивка совершенно правильно уходит в `deep sleep`, а
+модель этот уход не завершала — CPU навсегда застревал в ожидании аппаратного CRC по RTC
+fast memory, и interrupt watchdog печатал `Guru Meditation … Interrupt wdt timeout on CPU0`.
+
+### Как воспроизвести
+
+```bash
+tools/qemu/smoke.sh                                   # был panic=1..3, стало panic=0
+build/qemu/panic-0/panic-hold.sh build/qemu/q8 60 100 0.1   # то же без смоука, 3 прогона
+```
+
+Паника воспроизводится только когда в машине есть `-device xteink-buttons` (как в `x3emu.py`
+и в смоуке); без устройства её нет — то есть дело не в кнопке, а в профиле прогона.
+
+### Причина: wake-gate отклоняет «нажатие», которого не было, а модель не умеет просыпаться
+
+1. Холодный старт эмулятора — это `rst:0x1 (POWERON)`, но линия Power в этот момент
+   отпущена (никто не держит кнопку) и USB-питания нет. `HalGPIO::getWakeupReason()`
+   (`lib/hal/HalGPIO.cpp:498-503`) для X3 в этом случае возвращает `PowerButton`, а
+   `verifyPowerButtonWakeup()` (`lib/hal/HalGPIO.cpp:394-399`) видит не нажатый пин и
+   `trustedQuickWake=false` (маркера `cpwake` на свежем NVS нет) — вердикт `NotPressed`.
+   `setup()` по этому вердикту уходит обратно в сон (`src/main.cpp:897-901`,
+   `powerManager.startDeepSleep()`), и на реальном железе это ровно то, что нужно.
+2. `rtc_deep_sleep_start()` (`esp_hw_support/port/esp32c3/rtc_sleep.c:302`) перед сном считает
+   CRC по RTC fast memory: пишет `SYSTEM_RTC_FASTMEM_CONFIG` (`0x600C0048`) с
+   `RTC_MEM_CRC_START` (бит 8) и **ждёт в цикле** бит `RTC_MEM_CRC_FINISH` (бит 31). В
+   QEMU-модели SYSTEM-блока (`hw/riscv/esp32c3_clk.c`) этого регистра не было, чтение
+   возвращало 0 → цикл не завершался. Прерывания на этом участке выключены, поэтому через
+   300 мс срабатывает interrupt watchdog: `mcause=0x80000018` (внешнее прерывание IDWDT),
+   `MEPC` внутри `rtc_sleep_low_init`/`rtc_deep_sleep_start`, паника `rst:0xc`
+   (`RTC_SW_CPU_RST`). Второй boot идёт уже с `reset_reason != POWERON`, wake-gate
+   пропускается и прошивка доходит до UI — отсюда и «паника есть, но всё работает».
+3. Ровно поэтому же `/crash_report.txt` на карте показывал `Reset reason (esp_reset_reason): 5`
+   (это `ESP_RST_INT_WDT`), `Panic reason: not captured` и регистры из кадра паники.
+
+### Что изменено в модели (патч 0026)
+
+- `hw/riscv/esp32c3_clk.c` + `include/hw/riscv/esp32c3_clk.h`: реализованы
+  `SYSTEM_RTC_FASTMEM_CONFIG` и `SYSTEM_RTC_FASTMEM_CRC`. Запись с `RTC_MEM_CRC_START`
+  сразу выставляет `RTC_MEM_CRC_FINISH` (CRC-значение пишется нулём: прошивка кладёт его в
+  `RTC_CNTL` и не сверяет — wake stub не регистрируется);
+- `hw/misc/esp32c3_rtc_cntl.c` + `include/hw/misc/esp32c3_rtc_cntl.h`: запись
+  `RTC_CNTL_STATE0.SLEEP_EN` (последнее, что делает любой sleep) моделируется как
+  **пробуждение**: сброс машины, в `RTC_CNTL_RESET_STATE` остаётся причина
+  `ESP32C3_DEEPSLEEP_RESET` → ROM печатает `rst:0x5 (DSLEEP)`, `esp_reset_reason()` даёт
+  `ESP_RST_DEEPSLEEP`, `HalGPIO::getWakeupReason()` возвращает `Other` и прошивка спокойно
+  поднимается в UI (и `BootHealth` такой ресет крахом не считает).
+
+Проверено: `tools/qemu/panic-hold.sh` (3 прогона по 60 с) — `panic=0`, кадры библиотеки
+рисуются, в `boot.log` ровно одна строка
+`[RTCCNTL] sleep requested (STATE0.SLEEP_EN) -> RTC reset, deep-sleep cause`; `smoke.sh` —
+`SMOKE OK: … panic=0`; `verify-patches.sh --make-pre` — `RESULT forward=0 md5_mismatch=0
+reverse=0 pre_q4_mismatch=0 pre_q4_skipped=0` (26 патчей, 27 затронутых файлов).
+
+### Ограничения (Q8)
+
+- **deep sleep моделируется как «мгновенное пробуждение»**: «спящего» состояния нет, чип
+  сразу перезагружается с причиной `DSLEEP`. Для тестов это удобно (UI доступен), но реальную
+  длительность сна и пробуждение по RTC/GPIO это не проверяет;
+- light sleep отличать нечем: он ставит тот же `SLEEP_EN` и тоже даст сброс. Прошивка light
+  sleep не использует (`esp_light_sleep_start` в `src/`/`lib/` нет), но при появлении его в
+  коде модели понадобится отдельная ветка;
+- CRC по RTC fast memory не считается: значение всегда 0. Это безопасно только до тех пор,
+  пока прошивка не регистрирует wake stub (`esp_deep_sleep_register_wake_stub`), иначе ROM
+  на пробуждении сверит CRC;
+- «лишний» boot при холодной загрузке остаётся: сначала POWERON → отказ wake-gate →
+  DSLEEP-сброс → UI. Это поведение самой прошивки (так же ведёт себя железо при отпущенной
+  кнопке), а не эмулятора: чтобы UI появился на первом boot, кнопку Power надо держать при
+  старте.
+
 ## Что осталось для «полной эмуляции» (оценка по итогам разведки)
 
 1. **GP-SPI2 (SPI2) + SD** — сделано в Q2/Q3/Q4 (патчи 0008, 0012, 0014, 0015, 0021):
@@ -1284,16 +1359,12 @@ tools/qemu/reader-screen.py --check-dump build/qemu/ui/frame.bin --frame 36   # 
    (`READ=3`, `STOP=2`), `detectXteinkVerdict()` = X3Confirmed, плата поднимается как X3.
    Напоминание: без `QEMU_FRESH_FLASH=1` (или чистого NVS) проба не запускается вообще —
    прошивка верит кэшу `cphw/dev_det`.
-7. **Deep sleep / light sleep — главный оставшийся риск (Q4).** Прошивка в конце boot-цикла
-   уходит в сон (`POF` + `DEEP_SLEEP` в панель), и `esp_deep_sleep_start()` в QEMU не
-   моделируется: `rtc_deep_sleep_start()` (`rtc_sleep.c:302`) не доходит до парковки CPU, а
-   interrupt-watchdog срабатывает и печатает `Guru Meditation Error: Core 0 panic'ed
-   (Interrupt wdt timeout on CPU0)` → `Rebooting... rst:0xc (RTC_SW_CPU_RST)`. В части
-   прогонов чип после этого перезагружается (второй boot идёт уже без паники и живёт в UI),
-   в части — просто паркуется в `esp_cpu_wait_for_intr` с `MIE=1`. Нужно: либо остановка
-   CPU/WFI на deep sleep (и пробуждение от кнопок/RTC), либо корректное «снятие» IDWDT на
-   время сна. Из-за этого «кнопка Power на старте» — единственный способ удержать прошивку
-   в UI, а сценарии сна (sleep screen, quick resume) пока не проверяемы.
+7. **Deep sleep / light sleep — снято в Q8 (патч 0026).** `esp_deep_sleep_start()` больше не
+   зависает: CRC по RTC fast memory в модели завершается, а `SLEEP_EN` моделируется как
+   пробуждение — сброс с причиной `DSLEEP` (`rst:0x5`), после которого прошивка поднимается в
+   UI. Что по-прежнему не проверяемо: длительность сна и пробуждение по кнопке/RTC (чип
+   «просыпается» мгновенно), light sleep (тот же `SLEEP_EN` даст сброс вместо возврата) и
+   wake stub с проверкой CRC. Подробности и ограничения — в разделе «Q8».
 
 Ориентир по трудозатратам: 4–8 недель одного разработчика, причём п.3 (панель) — основной
 риск. Форк Espressif официально не поддерживается, так что цена поддержки ложится на нас.
