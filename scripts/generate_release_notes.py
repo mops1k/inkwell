@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 import os
 import re
 import subprocess
@@ -157,7 +158,7 @@ def build_release_notes(
     commits: list[tuple[str, str]],
     fallback_limit: int,
 ) -> str:
-    lines = [f"# Paperio Reader {current_label}", ""]
+    lines = [f"# Inkwell {current_label}", ""]
 
     if previous_release:
         prev_tag = previous_release["tag_name"]
@@ -209,6 +210,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    # A curated note in docs/releases/<version>.md wins: the fork keeps its own
+    # release history, and a commit list against upstream tags reads as noise
+    # there (the first 1.0.0 release used to dump 100 unrelated commits).
+    curated = Path(__file__).resolve().parent.parent / "docs" / "releases" / f"{args.current_label}.md"
+    if curated.is_file():
+        body = curated.read_text(encoding="utf-8").strip()
+        with open(args.output, "w", encoding="utf-8") as handle:
+            handle.write(f"# Inkwell {args.current_label}\n\n{body}\n")
+        print(f"[info] release notes taken from {curated}", file=sys.stderr)
+        return 0
     repo = os.environ.get("GITHUB_REPOSITORY")
     token = os.environ.get("GITHUB_TOKEN")
 
