@@ -485,8 +485,9 @@ inline void visitSettings(const void* context, SettingVisitor visitor) {
   add(SettingInfo::Enum(StrId::STR_STATUS_ITEMS_POSITION, &CrossPointSettings::statusBarItemsPosition,
                         {StrId::STR_TOP, StrId::STR_BOTTOM}, "statusBarItemsPosition",
                         StrId::STR_CUSTOMISE_STATUS_BAR));
-  add(SettingInfo::Toggle(StrId::STR_CHAPTER_PAGE_COUNT, &CrossPointSettings::statusBarChapterPageCount,
-                          "statusBarChapterPageCount", StrId::STR_CUSTOMISE_STATUS_BAR));
+  add(SettingInfo::Enum(StrId::STR_PAGE_COUNTER, &CrossPointSettings::statusBarPageCounter,
+                        {StrId::STR_HIDE, StrId::STR_PAGE_COUNTER_CHAPTER, StrId::STR_PAGE_COUNTER_BOOK},
+                        "statusBarPageCounter", StrId::STR_CUSTOMISE_STATUS_BAR));
   add(SettingInfo::Toggle(StrId::STR_PRINTED_PAGE_NUMBER, &CrossPointSettings::statusBarPrintedPage,
                           "statusBarPrintedPage", StrId::STR_CUSTOMISE_STATUS_BAR));
   add(SettingInfo::Toggle(StrId::STR_BOOK_PROGRESS_PERCENTAGE, &CrossPointSettings::statusBarBookProgressPercentage,

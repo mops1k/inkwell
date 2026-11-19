@@ -474,6 +474,8 @@ class App:
             return
         self.message = "starting QEMU..."
         self.render_status()
+        self.uart_probe_offset = 0
+        self.recovery_restarts = 0
         self.emu = x3emu.Emulator(
             firmware=self.firmware, work_dir=self.args.work_dir, fw_dir=self.fw_dir,
             fresh_flash=self.args.fresh_flash, fresh_sd=self.args.fresh_sd,
@@ -647,6 +649,43 @@ class App:
         print(f"screenshot: {path}", flush=True)
         return path
 
+    def maybe_restart_after_recovery(self) -> None:
+        """Restart QEMU with a clean NVS when the firmware latches SD recovery.
+
+        BootHealth counts cold-boot crashes in NVS and, after three of them, boots the
+        "choose a firmware .bin" screen instead of the library. In the emulator those
+        crashes are QEMU's own cold-boot panics, so during one interactive session the
+        counter fills up and the window becomes unusable. The firmware's boot path must
+        not be touched for that, and the flash device keeps its writes in RAM (host-side
+        edits to flash.bin do not reach a running QEMU), so the only reliable cure is a
+        QEMU restart with the NVS partition erased.
+        """
+        if self.emu is None or self.recovery_restarts >= 2:
+            return
+        try:
+            log = self.emu.uart_log
+            if not log.is_file():
+                return
+            size = log.stat().st_size
+            if size <= self.uart_probe_offset:
+                return
+            with log.open("rb") as fh:
+                fh.seek(self.uart_probe_offset)
+                chunk = fh.read(min(size - self.uart_probe_offset, 1 << 16))
+            self.uart_probe_offset = size
+            if b"entering SD recovery" not in chunk:
+                return
+        except OSError:
+            return
+        self.message = "SD recovery latched — restarting QEMU with a clean NVS"
+        self.render_status()
+        flash = self.emu.flash
+        self.emu.stop()
+        x3emu.reset_nvs_region(flash)
+        self.recovery_restarts += 1
+        self.uart_probe_offset = 0
+        self.start_emu()
+
     # -- main loop ---------------------------------------------------------- #
     def run(self) -> int:
         self.start_emu()
@@ -654,6 +693,7 @@ class App:
             # Only reached when there is nothing to boot (or --choose was given).
             self.open_dialog()
         last_status = 0.0
+        last_recovery_probe = 0.0
         while not self.quit:
             for event in self.win.pump(0.02):
                 if event["kind"] == "close":
@@ -682,6 +722,9 @@ class App:
                 last_status = time.monotonic()
                 if self.held or self.message:
                     self.render_status()
+                if time.monotonic() - last_recovery_probe > 0.5:
+                    last_recovery_probe = time.monotonic()
+                    self.maybe_restart_after_recovery()
         self.shutdown()
         return 0
 

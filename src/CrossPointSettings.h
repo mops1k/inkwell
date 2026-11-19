@@ -75,6 +75,16 @@ class CrossPointSettings {
     STATUS_BAR_PROGRESS_BAR_THICKNESS_COUNT
   };
   enum STATUS_BAR_TITLE { BOOK_TITLE = 0, CHAPTER_TITLE = 1, HIDE_TITLE = 2, STATUS_BAR_TITLE_COUNT };
+  // What the page counter in the status bar counts: nothing, pages of the current
+  // chapter, or pages of the whole book. People asked for "which page am I on in the
+  // book" much more often than for a chapter-local number, so the book counter is the
+  // default and the chapter counter is opt-in.
+  enum STATUS_BAR_PAGE_COUNTER {
+    PAGE_COUNTER_HIDE = 0,
+    PAGE_COUNTER_CHAPTER = 1,
+    PAGE_COUNTER_BOOK = 2,
+    STATUS_BAR_PAGE_COUNTER_COUNT
+  };
   enum STATUS_BAR_ITEMS_POSITION {
     STATUS_BAR_ITEMS_TOP = 0,
     STATUS_BAR_ITEMS_BOTTOM = 1,
@@ -238,7 +248,7 @@ class CrossPointSettings {
   uint8_t uiFontStyle = 0;  // 0 regular, 1 bold; independent of interface text size.
   // Status bar settings (statusBar, statusBarProgressBar, statusBarProgressBarThickness retained for migration only)
   uint8_t statusBar = FULL;
-  uint8_t statusBarChapterPageCount = 1;
+  uint8_t statusBarPageCounter = PAGE_COUNTER_BOOK;
   // Printed ("physical") page number from the book's page-list. Drawn in parentheses to the left of
   // the device page counter when both share a location; otherwise on its own. Default on.
   uint8_t statusBarPrintedPage = 1;

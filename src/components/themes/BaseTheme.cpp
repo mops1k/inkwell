@@ -887,7 +887,7 @@ void BaseTheme::fillPopupProgress(const GfxRenderer& renderer, const Rect& layou
 void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage,
                               const int pageCount, std::string title, const int paddingBottom, const bool isStarred,
                               const std::string& printedPageLabel, const bool fillMargin,
-                              const bool pageCountApproximate) const {
+                              const bool pageCountApproximate, const int bookPage, const int bookPageCount) const {
   // While a section is still being laid out the total page count is a byte-based estimate, shown
   // with a leading "~" so the reader knows it will firm up as the chapter finishes building.
   const char* pageCountPrefix = pageCountApproximate ? "~" : "";
@@ -941,7 +941,14 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
   drawEdgeProgressBar(SETTINGS.statusBarUpperProgressBar, SETTINGS.statusBarUpperProgressBarThickness, true);
   drawEdgeProgressBar(SETTINGS.statusBarLowerProgressBar, SETTINGS.statusBarLowerProgressBarThickness, false);
 
-  const bool hasProgressText = SETTINGS.statusBarBookProgressPercentage || SETTINGS.statusBarChapterPageCount;
+  const bool pageCounterShown = SETTINGS.statusBarPageCounter != CrossPointSettings::PAGE_COUNTER_HIDE;
+  const bool hasProgressText = SETTINGS.statusBarBookProgressPercentage || pageCounterShown;
+  // "By book" needs a book-wide page number; readers that only paginate chapter by chapter
+  // pass the same pair twice, so they keep working without special casing here.
+  const bool useBookCounter =
+      SETTINGS.statusBarPageCounter == CrossPointSettings::PAGE_COUNTER_BOOK && bookPageCount > 0;
+  const int counterPage = useBookCounter ? bookPage : currentPage;
+  const int counterTotal = useBookCounter ? bookPageCount : pageCount;
   const bool hasStatusItems = hasProgressText || SETTINGS.statusBarBattery || !title.empty() ||
                               SETTINGS.statusBarTitle != CrossPointSettings::STATUS_BAR_TITLE::HIDE_TITLE ||
                               (SETTINGS.useClock && SETTINGS.statusBarClock) || !printedPageLabel.empty();
@@ -973,13 +980,13 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     // right always reflects spine pagination.
     char progressStr[32];
 
-    if (SETTINGS.statusBarBookProgressPercentage && SETTINGS.statusBarChapterPageCount) {
-      snprintf(progressStr, sizeof(progressStr), "%d/%s%d  %.0f%%", currentPage, pageCountPrefix, pageCount,
+    if (SETTINGS.statusBarBookProgressPercentage && pageCounterShown) {
+      snprintf(progressStr, sizeof(progressStr), "%d/%s%d  %.0f%%", counterPage, pageCountPrefix, counterTotal,
                bookProgress);
     } else if (SETTINGS.statusBarBookProgressPercentage) {
       snprintf(progressStr, sizeof(progressStr), "%.0f%%", bookProgress);
     } else {
-      snprintf(progressStr, sizeof(progressStr), "%d/%s%d", currentPage, pageCountPrefix, pageCount);
+      snprintf(progressStr, sizeof(progressStr), "%d/%s%d", counterPage, pageCountPrefix, counterTotal);
     }
 
     const int progressStrWidth = renderer.getTextWidth(SMALL_FONT_ID, progressStr);
@@ -996,41 +1003,46 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     renderer.drawText(SMALL_FONT_ID, textX, textY, printedPageLabel.c_str());
   }
 
-  // Draw Battery
+  // Left zone: clock first, then the battery, laid out one after another. Both were
+  // positioned from fixed offsets before, so with both enabled the clock landed on top
+  // of the battery percentage.
+  constexpr int statusItemGap = 8;
   const bool showBatteryPercentage =
       SETTINGS.hideBatteryPercentage == CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_NEVER;
-  const int batteryX = metrics.statusBarHorizontalMargin + orientedMarginLeft + 1;
+  const int leftZoneX = metrics.statusBarHorizontalMargin + orientedMarginLeft + 1;
+  int leftZoneCursor = leftZoneX;
+
+  int clockTextWidth = 0;
+  if (SETTINGS.useClock && SETTINGS.statusBarClock) {
+    char clockStr[16];
+    HalClock::formatTime(clockStr, sizeof(clockStr), !SETTINGS.clockFormat12h);
+    clockTextWidth = renderer.getTextWidth(SMALL_FONT_ID, clockStr);
+    renderer.drawText(SMALL_FONT_ID, leftZoneCursor, textY, clockStr);
+    leftZoneCursor += clockTextWidth;
+  }
+
   int batteryStatusWidth = 0;
   if (SETTINGS.statusBarBattery) {
+    if (clockTextWidth > 0) leftZoneCursor += statusItemGap;
     batteryStatusWidth = metrics.batteryWidth;
     if (showBatteryPercentage) {
       const std::string percentageText = std::to_string(powerManager.getBatteryPercentage()) + "%";
       batteryStatusWidth +=
           BaseTheme::batteryPercentSpacing + renderer.getTextWidth(SMALL_FONT_ID, percentageText.c_str());
     }
-    GUI.drawBatteryLeft(renderer, Rect{batteryX, textY, metrics.batteryWidth, metrics.batteryHeight},
+    GUI.drawBatteryLeft(renderer, Rect{leftZoneCursor, textY, metrics.batteryWidth, metrics.batteryHeight},
                         showBatteryPercentage);
+    leftZoneCursor += batteryStatusWidth;
   }
-
-  // Draw Clock
-  int clockTextWidth = 0;
-  if (SETTINGS.useClock && SETTINGS.statusBarClock) {
-    char clockStr[16];
-    HalClock::formatTime(clockStr, sizeof(clockStr), !SETTINGS.clockFormat12h);
-    clockTextWidth = renderer.getTextWidth(SMALL_FONT_ID, clockStr);
-    constexpr int statusItemGap = 8;
-    const int clockX = batteryX + batteryStatusWidth + (SETTINGS.statusBarBattery ? statusItemGap : 0);
-    renderer.drawText(SMALL_FONT_ID, clockX, textY, clockStr);
-  }
+  const int leftZoneWidth = leftZoneCursor - leftZoneX;
+  (void)leftZoneWidth;
 
   // Draw Title
   if (SETTINGS.statusBarTitle != CrossPointSettings::STATUS_BAR_TITLE::HIDE_TITLE && !title.empty()) {
     const int rendererableScreenWidth =
         screenWidth - (metrics.statusBarHorizontalMargin * 2) - orientedMarginLeft - orientedMarginRight;
 
-    const int batterySize = SETTINGS.statusBarBattery ? batteryStatusWidth : 0;
-    const int clockSize = clockTextWidth > 0 ? clockTextWidth + 8 : 0;
-    const int titleMarginLeft = batterySize + clockSize + 30;
+    const int titleMarginLeft = leftZoneWidth + 30;
     const int titleMarginRight = progressTextWidth + 30;
 
     // Attempt to center title on the screen, but if title is too wide then later we will center it within the

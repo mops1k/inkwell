@@ -46,6 +46,12 @@ struct LibraryFilter {
   }
 };
 
+// A filter value and the number of visible books behind it (author, series, genre…).
+struct FilterValueCount {
+  std::string value;
+  int count = 0;
+};
+
 // Everything the shelf screen needs to turn the index into visible cells.
 struct LibraryQuery {
   LibraryFilter filter;
@@ -70,6 +76,13 @@ struct LibraryQuery {
   // library are skipped. `cap` bounds the list so a pathological library cannot
   // grow a picker past RAM.
   void collectValues(const ShelfIndex& index, FilterField field, std::vector<std::string>& out, size_t cap = 120) const;
+
+  // Distinct values of `field` together with how many visible books carry each one.
+  // The browse screens need the counter next to the name ("Кликин · 2"), the same way
+  // the Android library shows category rows, and computing it here keeps the counting
+  // rule in one place instead of per screen.
+  void collectValueCounts(const ShelfIndex& index, FilterField field, std::vector<FilterValueCount>& out,
+                          size_t cap = 200) const;
 };
 
 // Convenience overload for callers with no hidden books (tests, exporters).

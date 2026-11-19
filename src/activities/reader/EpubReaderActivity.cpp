@@ -4587,8 +4587,17 @@ void EpubReaderActivity::renderStatusBar() const {
       printedPageLabel = std::string("(") + *nearest + ")";
     }
   }
+  // Book-wide page counter: the same estimate the home-screen progress uses, so both
+  // numbers agree instead of drifting apart with two different formulas.
+  int bookPage = 0;
+  int bookPageTotal = 0;
+  if (!epubBookPageEstimate(*epub, currentSpineIndex, section->currentPage, displayPageCount, bookPage,
+                            bookPageTotal)) {
+    bookPage = currentPage;
+    bookPageTotal = displayPageCount;
+  }
   GUI.drawStatusBar(renderer, bookProgress, currentPage, displayPageCount, title, 0, isStarred, printedPageLabel,
-                    /*fillMargin=*/true, /*pageCountApproximate=*/building);
+                    /*fillMargin=*/true, /*pageCountApproximate=*/building, bookPage, bookPageTotal);
 
 #if DEBUG_BACKGROUND_WORK
   renderBackgroundDebugOverlay();

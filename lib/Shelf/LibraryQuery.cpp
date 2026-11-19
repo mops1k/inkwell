@@ -170,6 +170,27 @@ void LibraryQuery::collectValues(const ShelfIndex& index, FilterField field, std
   std::sort(out.begin(), out.end(), [](const std::string& a, const std::string& b) { return compareFold(a, b) < 0; });
 }
 
+void LibraryQuery::collectValueCounts(const ShelfIndex& index, FilterField field,
+                                      std::vector<FilterValueCount>& out, size_t cap) const {
+  out.clear();
+  if (field == FilterField::None) return;
+  for (const auto& book : index.books) {
+    if (isHidden(book)) continue;
+    const std::string value = field == FilterField::Format ? formatValue(book) : fieldValue(book.meta, field);
+    if (value.empty()) continue;
+    const auto existing = std::find_if(out.begin(), out.end(),
+                                       [&value](const FilterValueCount& entry) { return entry.value == value; });
+    if (existing != out.end()) {
+      ++existing->count;
+      continue;
+    }
+    if (out.size() >= cap) continue;
+    out.push_back(FilterValueCount{value, 1});
+  }
+  std::sort(out.begin(), out.end(),
+            [](const FilterValueCount& a, const FilterValueCount& b) { return compareFold(a.value, b.value) < 0; });
+}
+
 void collectValues(const ShelfIndex& index, FilterField field, std::vector<std::string>& out, size_t cap) {
   LibraryQuery{}.collectValues(index, field, out, cap);
 }

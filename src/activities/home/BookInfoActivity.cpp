@@ -448,7 +448,10 @@ void BookInfoActivity::openCoverPicker() {
 
 void BookInfoActivity::openReader() {
   ReturnHint hint;
-  hint.target = returnToShelf_ ? ReturnTo::Shelf : ReturnTo::Home;
+  // Back from the reader returns to this card, and the card's own Back returns to the
+  // library: the reader is entered from the card, so leaving it must walk the same path
+  // in reverse instead of jumping straight to the grid.
+  hint.target = returnToShelf_ ? ReturnTo::BookCard : ReturnTo::Home;
   hint.selectName = filePath;
   activityManager.replaceWithReader(filePath, std::move(hint));
 }

@@ -32,7 +32,7 @@ constexpr size_t MAX_PASSWORD_LENGTH = 64;
 void applyLegacyStatusBarSettings(CrossPointSettings& settings) {
   switch (static_cast<CrossPointSettings::STATUS_BAR_MODE>(settings.statusBar)) {
     case CrossPointSettings::NONE:
-      settings.statusBarChapterPageCount = 0;
+      settings.statusBarPageCounter = CrossPointSettings::PAGE_COUNTER_HIDE;
       settings.statusBarBookProgressPercentage = 0;
       settings.statusBarProgressBar = CrossPointSettings::HIDE_PROGRESS;
       settings.statusBarLowerProgressBar = CrossPointSettings::HIDE_PROGRESS;
@@ -40,7 +40,7 @@ void applyLegacyStatusBarSettings(CrossPointSettings& settings) {
       settings.statusBarBattery = 0;
       break;
     case CrossPointSettings::NO_PROGRESS:
-      settings.statusBarChapterPageCount = 0;
+      settings.statusBarPageCounter = CrossPointSettings::PAGE_COUNTER_HIDE;
       settings.statusBarBookProgressPercentage = 0;
       settings.statusBarProgressBar = CrossPointSettings::HIDE_PROGRESS;
       settings.statusBarLowerProgressBar = CrossPointSettings::HIDE_PROGRESS;
@@ -48,7 +48,7 @@ void applyLegacyStatusBarSettings(CrossPointSettings& settings) {
       settings.statusBarBattery = 1;
       break;
     case CrossPointSettings::BOOK_PROGRESS_BAR:
-      settings.statusBarChapterPageCount = 1;
+      settings.statusBarPageCounter = CrossPointSettings::PAGE_COUNTER_CHAPTER;
       settings.statusBarBookProgressPercentage = 0;
       settings.statusBarProgressBar = CrossPointSettings::BOOK_PROGRESS;
       settings.statusBarLowerProgressBar = CrossPointSettings::BOOK_PROGRESS;
@@ -56,7 +56,7 @@ void applyLegacyStatusBarSettings(CrossPointSettings& settings) {
       settings.statusBarBattery = 1;
       break;
     case CrossPointSettings::ONLY_BOOK_PROGRESS_BAR:
-      settings.statusBarChapterPageCount = 1;
+      settings.statusBarPageCounter = CrossPointSettings::PAGE_COUNTER_CHAPTER;
       settings.statusBarBookProgressPercentage = 0;
       settings.statusBarProgressBar = CrossPointSettings::BOOK_PROGRESS;
       settings.statusBarLowerProgressBar = CrossPointSettings::BOOK_PROGRESS;
@@ -64,7 +64,7 @@ void applyLegacyStatusBarSettings(CrossPointSettings& settings) {
       settings.statusBarBattery = 0;
       break;
     case CrossPointSettings::CHAPTER_PROGRESS_BAR:
-      settings.statusBarChapterPageCount = 0;
+      settings.statusBarPageCounter = CrossPointSettings::PAGE_COUNTER_HIDE;
       settings.statusBarBookProgressPercentage = 1;
       settings.statusBarProgressBar = CrossPointSettings::CHAPTER_PROGRESS;
       settings.statusBarLowerProgressBar = CrossPointSettings::CHAPTER_PROGRESS;
@@ -73,7 +73,7 @@ void applyLegacyStatusBarSettings(CrossPointSettings& settings) {
       break;
     case CrossPointSettings::FULL:
     default:
-      settings.statusBarChapterPageCount = 1;
+      settings.statusBarPageCounter = CrossPointSettings::PAGE_COUNTER_CHAPTER;
       settings.statusBarBookProgressPercentage = 1;
       settings.statusBarProgressBar = CrossPointSettings::HIDE_PROGRESS;
       settings.statusBarLowerProgressBar = CrossPointSettings::HIDE_PROGRESS;
@@ -353,7 +353,19 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
 
   // Legacy migration: if statusBarChapterPageCount is absent this is a pre-refactor settings file.
   // Populate s with migrated values now so the generic loop below picks them up as defaults and clamps them.
-  if (doc["statusBarChapterPageCount"].isNull()) {
+  // The boolean show/hide of the chapter counter became a three-way setting. An old
+  // "true" keeps chapter counting, "false" keeps it hidden, and a file that never had
+  // the key follows the legacy status-bar presets below.
+  if (doc["statusBarPageCounter"].isNull() && !doc["statusBarChapterPageCount"].isNull()) {
+    // A settings file that had the counter switched on migrates to the book-wide
+    // counter: that is the number people actually asked for. "Hidden" stays hidden,
+    // and the chapter counter remains available as an explicit choice.
+    const int legacyCounter = doc["statusBarChapterPageCount"] | 0;
+    s.statusBarPageCounter =
+        legacyCounter != 0 ? CrossPointSettings::PAGE_COUNTER_BOOK : CrossPointSettings::PAGE_COUNTER_HIDE;
+    if (needsResave) *needsResave = true;
+  }
+  if (doc["statusBarPageCounter"].isNull() && doc["statusBarChapterPageCount"].isNull()) {
     s.statusBar = clamp(doc["statusBar"] | s.statusBar, CrossPointSettings::STATUS_BAR_MODE_COUNT, s.statusBar);
     applyLegacyStatusBarSettings(s);
     if (needsResave) *needsResave = true;

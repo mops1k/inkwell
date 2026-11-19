@@ -45,16 +45,22 @@ constexpr StatusBarItem toggleItem(StrId label, uint8_t CrossPointSettings::* fi
   return {label, field, 2, 1, nullptr, requiresClock};
 }
 
+const StrId pageCounterNames[] = {StrId::STR_HIDE, StrId::STR_PAGE_COUNTER_CHAPTER,
+                                 StrId::STR_PAGE_COUNTER_BOOK};
+
 const StatusBarItem statusBarItems[] = {
     enumItem(StrId::STR_STATUS_ITEMS_POSITION, &CrossPointSettings::statusBarItemsPosition, statusItemsPositionNames,
              CrossPointSettings::STATUS_BAR_ITEMS_POSITION::STATUS_BAR_ITEMS_BOTTOM),
-    toggleItem(StrId::STR_CHAPTER_PAGE_COUNT, &CrossPointSettings::statusBarChapterPageCount),
+    enumItem(StrId::STR_PAGE_COUNTER, &CrossPointSettings::statusBarPageCounter, pageCounterNames,
+             CrossPointSettings::PAGE_COUNTER_BOOK),
     toggleItem(StrId::STR_PRINTED_PAGE_NUMBER, &CrossPointSettings::statusBarPrintedPage),
     toggleItem(StrId::STR_BOOK_PROGRESS_PERCENTAGE, &CrossPointSettings::statusBarBookProgressPercentage),
     enumItem(StrId::STR_TITLE, &CrossPointSettings::statusBarTitle, titleNames,
              CrossPointSettings::STATUS_BAR_TITLE::HIDE_TITLE),
     toggleItem(StrId::STR_BATTERY, &CrossPointSettings::statusBarBattery),
-    toggleItem(StrId::STR_CLOCK, &CrossPointSettings::statusBarClock, /*requiresClock=*/true),
+    // Always listed: hiding the row when "use clock" was off looked like the menu item
+    // had disappeared. The status bar itself still draws the clock only when enabled.
+    toggleItem(StrId::STR_CLOCK, &CrossPointSettings::statusBarClock),
     enumItem(StrId::STR_UPPER_PROGRESS_BAR, &CrossPointSettings::statusBarUpperProgressBar, progressBarNames,
              CrossPointSettings::STATUS_BAR_PROGRESS_BAR::HIDE_PROGRESS),
     enumItem(StrId::STR_UPPER_PROGRESS_BAR_THICKNESS, &CrossPointSettings::statusBarUpperProgressBarThickness,
@@ -107,7 +113,9 @@ void drawPreviewProgressBar(const GfxRenderer& renderer, const Rect& rect, const
 }
 
 void drawPreviewStatusItems(const GfxRenderer& renderer, const Rect& rect, const ThemeMetrics& metrics) {
-  const bool hasProgressText = SETTINGS.statusBarChapterPageCount || SETTINGS.statusBarBookProgressPercentage;
+  const bool hasProgressText =
+      SETTINGS.statusBarPageCounter != CrossPointSettings::PAGE_COUNTER_HIDE ||
+      SETTINGS.statusBarBookProgressPercentage;
   const bool hasTitle = SETTINGS.statusBarTitle != CrossPointSettings::STATUS_BAR_TITLE::HIDE_TITLE;
   const bool hasStatusItems = hasProgressText || hasTitle || SETTINGS.statusBarBattery ||
                               SETTINGS.statusBarPrintedPage || (SETTINGS.useClock && SETTINGS.statusBarClock);
@@ -152,13 +160,23 @@ void drawPreviewStatusItems(const GfxRenderer& renderer, const Rect& rect, const
   int progressTextWidth = 0;
   const int rightEdge = rect.x + rect.width - previewInnerMargin - 2;
   if (hasProgressText) {
+    // The preview shows what the chosen mode will actually print: a chapter-local pair
+    // ("2/32") or a book-wide one ("28/513"). A single sample pair made the two modes
+    // look identical in the settings list.
+    char counterStr[16] = "";
+    if (SETTINGS.statusBarPageCounter == CrossPointSettings::PAGE_COUNTER_CHAPTER) {
+      snprintf(counterStr, sizeof(counterStr), "%d/%d", 2, 32);
+    } else if (SETTINGS.statusBarPageCounter == CrossPointSettings::PAGE_COUNTER_BOOK) {
+      snprintf(counterStr, sizeof(counterStr), "%d/%d", 28, 513);
+    }
+
     char progressStr[32] = "";
-    if (SETTINGS.statusBarChapterPageCount && SETTINGS.statusBarBookProgressPercentage) {
-      snprintf(progressStr, sizeof(progressStr), "%d/%d  %d%%", 8, 32, 75);
+    if (counterStr[0] != '\0' && SETTINGS.statusBarBookProgressPercentage) {
+      snprintf(progressStr, sizeof(progressStr), "%s  %d%%", counterStr, 75);
     } else if (SETTINGS.statusBarBookProgressPercentage) {
       snprintf(progressStr, sizeof(progressStr), "%d%%", 75);
     } else {
-      snprintf(progressStr, sizeof(progressStr), "%d/%d", 8, 32);
+      snprintf(progressStr, sizeof(progressStr), "%s", counterStr);
     }
 
     const int progressStrWidth = renderer.getTextWidth(SMALL_FONT_ID, progressStr);

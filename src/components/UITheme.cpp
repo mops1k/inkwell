@@ -432,7 +432,8 @@ int UITheme::getStatusBarItemsHeight() {
 }
 
 int UITheme::getStatusBarTopHeight(const bool forceStatusItems) {
-  const bool showStatusItems = forceStatusItems || SETTINGS.statusBarChapterPageCount ||
+  const bool showStatusItems = forceStatusItems ||
+                               SETTINGS.statusBarPageCounter != CrossPointSettings::PAGE_COUNTER_HIDE ||
                                SETTINGS.statusBarBookProgressPercentage ||
                                SETTINGS.statusBarTitle != CrossPointSettings::STATUS_BAR_TITLE::HIDE_TITLE ||
                                SETTINGS.statusBarBattery || (SETTINGS.useClock && SETTINGS.statusBarClock);
@@ -445,7 +446,8 @@ int UITheme::getStatusBarTopHeight(const bool forceStatusItems) {
 }
 
 int UITheme::getStatusBarBottomHeight(const bool forceStatusItems) {
-  const bool showStatusItems = forceStatusItems || SETTINGS.statusBarChapterPageCount ||
+  const bool showStatusItems = forceStatusItems ||
+                               SETTINGS.statusBarPageCounter != CrossPointSettings::PAGE_COUNTER_HIDE ||
                                SETTINGS.statusBarBookProgressPercentage ||
                                SETTINGS.statusBarTitle != CrossPointSettings::STATUS_BAR_TITLE::HIDE_TITLE ||
                                SETTINGS.statusBarBattery || (SETTINGS.useClock && SETTINGS.statusBarClock);

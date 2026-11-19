@@ -110,6 +110,33 @@ TEST(LibraryQuery, CollectsDistinctValues) {
   EXPECT_TRUE(values.empty());
 }
 
+TEST(LibraryQuery, CountsBooksBehindEachValue) {
+  const shelf::ShelfIndex index = makeIndex();
+  shelf::LibraryQuery query;
+
+  std::vector<shelf::FilterValueCount> authors;
+  query.collectValueCounts(index, shelf::FilterField::Author, authors);
+  ASSERT_EQ(authors.size(), 3u);
+  EXPECT_EQ(authors[0].value, "Герберт");
+  EXPECT_EQ(authors[0].count, 1);
+
+  std::vector<shelf::FilterValueCount> series;
+  query.collectValueCounts(index, shelf::FilterField::Series, series);
+  ASSERT_EQ(series.size(), 2u);
+  for (const auto& entry : series) {
+    EXPECT_EQ(entry.count, entry.value == "Русская классика" ? 2 : 1);
+  }
+
+  // Hidden books never contribute to the counters, exactly like the value lists.
+  shelf::LibraryQuery hiding;
+  hiding.hiddenPaths = {"/books/a.epub"};
+  std::vector<shelf::FilterValueCount> hiddenSeries;
+  hiding.collectValueCounts(index, shelf::FilterField::Series, hiddenSeries);
+  for (const auto& entry : hiddenSeries) {
+    if (entry.value == "Русская классика") EXPECT_EQ(entry.count, 1);
+  }
+}
+
 TEST(LibraryQuery, SortsByLastOpened) {
   const shelf::ShelfIndex index = makeIndex();
   std::vector<uint16_t> out;
