@@ -1,0 +1,173 @@
+name: Release
+
+# Publishing rule:
+#   * a tag like 0.2.0 (no "v" prefix) builds the release image and publishes a
+#     GitHub Release with firmware.bin + SHA256SUMS;
+#   * a manual run does the same for a version typed into the form, and can create
+#     the tag itself when it does not exist yet.
+#
+# The version string is injected through CROSSPOINT_RELEASE_VERSION, which
+# scripts/git_branch.py reads for the gh_release environment — the same mechanism
+# the local release builds use, so the image shows the published version.
+
+on:
+  push:
+    tags:
+      - "[0-9]*.[0-9]*.[0-9]*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without prefix, e.g. 0.2.0"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark the GitHub release as a pre-release"
+        required: false
+        default: false
+        type: boolean
+      create_tag:
+        description: "Create and push the tag if it does not exist"
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  PLATFORMIO_VERSION: "6.2.0"
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout (full history, with submodules)
+        uses: actions/checkout@v4
+        with:
+          # Release notes compare the new tag against the previous published
+          # release, so the whole history and all tags are needed.
+          fetch-depth: 0
+          fetch-tags: true
+          submodules: recursive
+
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="${INPUT_VERSION}"
+          fi
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::version '$VERSION' is not X.Y.Z or X.Y.Z-suffix"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Publishing Inkwell $VERSION"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ env.PLATFORMIO_VERSION }}-${{ hashFiles('platformio.ini', 'inkwell.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-${{ env.PLATFORMIO_VERSION }}-
+
+      - name: Install PlatformIO
+        run: pip install "platformio==${PLATFORMIO_VERSION}"
+
+      - name: Generate i18n headers
+        run: python3 scripts/gen_i18n.py lib/I18n/translations lib/I18n/
+
+      - name: Build release firmware
+        env:
+          # Read by scripts/git_branch.py for the gh_release environment.
+          CROSSPOINT_RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: pio run -e gh_release
+
+      - name: Collect image and checksum
+        id: assets
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          IMAGE=.pio/build/gh_release/firmware.bin
+          test -s "$IMAGE"
+          mkdir -p dist
+          cp "$IMAGE" "dist/inkwell-${VERSION}.bin"
+          (cd dist && sha256sum ./*.bin > SHA256SUMS)
+          cat dist/SHA256SUMS
+          echo "image=dist/inkwell-${VERSION}.bin" >> "$GITHUB_OUTPUT"
+          echo "sums=dist/SHA256SUMS" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release notes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          SCOPE="full"
+          if [ "${PRERELEASE:-false}" = "true" ]; then
+            SCOPE="any"
+          fi
+          python3 scripts/generate_release_notes.py \
+            --output release-notes.md \
+            --target-sha "$(git rev-parse HEAD)" \
+            --current-label "${VERSION}" \
+            --release-scope "$SCOPE" \
+            --exclude-tag "${VERSION}" || {
+              printf 'Release %s\n' "${VERSION}" > release-notes.md
+            }
+          cat release-notes.md
+
+      - name: Create tag (manual run only)
+        if: github.event_name == 'workflow_dispatch' && inputs.create_tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+            echo "tag ${VERSION} already exists"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "${VERSION}" -m "Inkwell ${VERSION}"
+            git push origin "refs/tags/${VERSION}"
+          fi
+
+      - name: Publish GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          FLAGS=(--title "Inkwell ${VERSION}" --notes-file release-notes.md)
+          if [ "${PRERELEASE:-false}" = "true" ]; then
+            FLAGS+=(--prerelease)
+          fi
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            gh release upload "${VERSION}" dist/* --clobber
+            gh release edit "${VERSION}" "${FLAGS[@]}"
+          else
+            gh release create "${VERSION}" dist/* "${FLAGS[@]}"
+          fi

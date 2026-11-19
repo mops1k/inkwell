@@ -1,0 +1,137 @@
+name: CI
+
+# What this workflow guards:
+#   * every pull request must pass the host test suite before it can be merged;
+#   * every push to main keeps the firmware compiling (a broken image on main is the
+#     one failure that is expensive to discover on the device);
+#   * the same checks can be started by hand from the Actions tab.
+#
+# Firmware build output is an artifact, not a release: publishing lives in
+# release.yml and only happens for tags or an explicit manual run.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Matches the locally used toolchain (AGENTS.md: PlatformIO 6.2.0).
+  PLATFORMIO_VERSION: "6.2.0"
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  host-tests:
+    name: Host tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ env.PLATFORMIO_VERSION }}-${{ hashFiles('platformio.ini', 'inkwell.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-${{ env.PLATFORMIO_VERSION }}-
+
+      - name: Install PlatformIO
+        run: pip install "platformio==${PLATFORMIO_VERSION}"
+
+      - name: Generate i18n headers
+        run: python3 scripts/gen_i18n.py lib/I18n/translations lib/I18n/
+
+      - name: Configure host tests
+        run: cmake -S test -B build/test
+
+      - name: Build host tests
+        run: cmake --build build/test -j"$(nproc)"
+
+      - name: Run host tests
+        run: ctest --test-dir build/test -j"$(nproc)" --output-on-failure
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-test-logs
+          path: |
+            build/test/Testing/**
+            build/test/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  firmware:
+    name: Firmware build
+    needs: host-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Cache PlatformIO and build tree
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ env.PLATFORMIO_VERSION }}-${{ hashFiles('platformio.ini', 'inkwell.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-${{ env.PLATFORMIO_VERSION }}-
+
+      - name: Install PlatformIO
+        run: pip install "platformio==${PLATFORMIO_VERSION}"
+
+      - name: Generate i18n headers
+        run: python3 scripts/gen_i18n.py lib/I18n/translations lib/I18n/
+
+      # No secrets are needed: the dev environment only needs the git metadata the
+      # pre-build script reads from the checkout itself.
+      - name: Build firmware (default env)
+        run: pio run -e default
+
+      - name: Collect image and checksum
+        run: |
+          set -euo pipefail
+          IMAGE=.pio/build/default/firmware.bin
+          test -s "$IMAGE"
+          mkdir -p dist
+          cp "$IMAGE" "dist/inkwell-$(git rev-parse --short HEAD).bin"
+          (cd dist && sha256sum ./*.bin > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ github.sha }}
+          path: dist/*
+          retention-days: 14
