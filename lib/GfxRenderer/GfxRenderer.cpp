@@ -1451,7 +1451,7 @@ void GfxRenderer::drawTextScaled(const int fontId, const int x, const int y, con
 }
 
 void GfxRenderer::drawFittedCaption(const int fontId, const int x, const int y, const int width, const int height,
-                                   const char* text) const {
+                                    const char* text) const {
   constexpr auto style = EpdFontFamily::REGULAR;
   const int naturalWidth = getTextWidth(fontId, text, style);
   if (naturalWidth <= width) {
@@ -2667,7 +2667,8 @@ void GfxRenderer::displayWindow(int logX, int logY, int logW, int logH, bool tur
   uint16_t physX, physY, physW, physH;
   switch (getOrientation()) {
     case Portrait:
-      // phyX = logY, phyY = panelHeight-1-logX (top-left corner)
+      // phyX = logY, phyY = panelHeight-logX-logW (top-left corner; the panel is
+      // addressed source-major, so a logical column becomes a physical row)
       physX = static_cast<uint16_t>(logY);
       physY = static_cast<uint16_t>(panelHeight - logX - logW);
       physW = static_cast<uint16_t>(logH);
@@ -2695,6 +2696,28 @@ void GfxRenderer::displayWindow(int logX, int logY, int logW, int logH, bool tur
       physW = static_cast<uint16_t>(logW);
       physH = static_cast<uint16_t>(logH);
       break;
+  }
+  // The X3 panel driver has no windowed refresh at all: it repaints the whole
+  // frame from `fb`. The display facade still has to know what the panel shows,
+  // and it mirrors only a byte-aligned window back into that baseline
+  // (FreeInkDisplay::displayWindow). A 76 px shelf list row turns into a physical
+  // window of 76 columns — 76 % 8 == 4 — so the mirror was silently skipped, the
+  // baseline kept the previous frame and the next partial refresh copied the old
+  // selection plate back: two highlighted rows at once. Rounding the physical
+  // rectangle out to whole bytes restores the mirror; the added columns are
+  // unchanged pixels, so they copy identical bytes in both buffers.
+  const int alignedX = static_cast<int>(physX) & ~7;
+  const int alignedRight = (static_cast<int>(physX) + physW + 7) & ~7;
+  const int right = alignedRight < panelWidth ? alignedRight : panelWidth;
+  if (right > alignedX) {
+    physX = static_cast<uint16_t>(alignedX);
+    physW = static_cast<uint16_t>(right - alignedX);
+  }
+  // A window is only mirrored when it lies inside the panel: clamp instead of
+  // letting an oversized rectangle drop the whole update.
+  if (static_cast<int>(physY) + physH > panelHeight) {
+    if (physY >= panelHeight) return;
+    physH = static_cast<uint16_t>(panelHeight - physY);
   }
   LOG_DBG("WIN", "displayWindow logical(%d,%d,%d,%d) orient=%d → physical(%d,%d,%d,%d)", logX, logY, logW, logH,
           (int)getOrientation(), physX, physY, physW, physH);
