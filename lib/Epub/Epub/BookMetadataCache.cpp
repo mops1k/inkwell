@@ -12,7 +12,8 @@
 #include "FsHelpers.h"
 
 namespace {
-constexpr uint8_t BOOK_CACHE_VERSION = 13;
+// 14: added year/publisher/pages to the metadata block (shelf book card).
+constexpr uint8_t BOOK_CACHE_VERSION = 14;
 constexpr char bookBinFile[] = "/book.bin";
 constexpr char tmpSpineBinFile[] = "/spine.bin.tmp";
 constexpr char tmpTocBinFile[] = "/toc.bin.tmp";
@@ -177,10 +178,16 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
 
   constexpr uint32_t headerASize = sizeof(BOOK_CACHE_VERSION) + /* LUT Offset */ sizeof(uint32_t) + sizeof(spineCount) +
                                    sizeof(tocCount) + sizeof(uint8_t) /* tocReliable */;
+  // Every metadata string is written as a u32 length prefix plus its bytes, so
+  // the header cost is 4 bytes per string: 12 strings since version 14 added
+  // year/publisher/pages. Keep the count and the write list below in step —
+  // the reader validates its position against lutOffset and rejects the cache.
+  constexpr uint32_t kMetadataStrings = 12;
   const uint32_t metadataSize = metadata.title.size() + metadata.author.size() + metadata.language.size() +
                                 metadata.coverItemHref.size() + metadata.textReferenceHref.size() +
                                 metadata.series.size() + metadata.seriesIndex.size() + metadata.description.size() +
-                                metadata.genre.size() + sizeof(uint32_t) * 9;
+                                metadata.genre.size() + metadata.year.size() + metadata.publisher.size() +
+                                metadata.pages.size() + sizeof(uint32_t) * kMetadataStrings;
   const uint32_t lutSize = sizeof(uint32_t) * spineCount + sizeof(uint32_t) * tocCount;
   const uint32_t lutOffset = headerASize + metadataSize;
 
@@ -211,6 +218,9 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
   bookWriter.writeString(metadata.seriesIndex);
   bookWriter.writeString(metadata.description);
   bookWriter.writeString(metadata.genre);
+  bookWriter.writeString(metadata.year);
+  bookWriter.writeString(metadata.publisher);
+  bookWriter.writeString(metadata.pages);
 
   // Scratch entries reused across all read loops below. Their internal
   // std::strings keep the capacity of the longest href/title encountered, so
@@ -604,7 +614,9 @@ bool BookMetadataCache::load() {
   if (!readMetadata(coreMetadata.title) || !readMetadata(coreMetadata.author) || !readMetadata(coreMetadata.language) ||
       !readMetadata(coreMetadata.coverItemHref) || !readMetadata(coreMetadata.textReferenceHref) ||
       !readMetadata(coreMetadata.series) || !readMetadata(coreMetadata.seriesIndex) ||
-      !readMetadata(coreMetadata.description) || !readMetadata(coreMetadata.genre) || bookFile.position() != lutOffset)
+      !readMetadata(coreMetadata.description) || !readMetadata(coreMetadata.genre) ||
+      !readMetadata(coreMetadata.year) || !readMetadata(coreMetadata.publisher) || !readMetadata(coreMetadata.pages) ||
+      bookFile.position() != lutOffset)
     return reject();
 
   loaded = true;

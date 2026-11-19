@@ -17,6 +17,12 @@ namespace {
 // v3: the FB2/FB2.ZIP scanner now yields series/sequence. A version bump makes
 // the stored index unreadable, so the next entry rebuilds it instead of keeping
 // every cached book with the empty series its old scan produced.
+//
+// `year`, `publisher` and `pages` were added WITHOUT a bump: they are purely
+// additive keys, a v3 document loads with them empty and the next explicit
+// library refresh ("Обновить библиотеку") fills them in. Bumping for these
+// would force a full rescan of every library on upgrade for data most books
+// do not even declare.
 constexpr int kIndexVersion = 3;
 constexpr int kMinSupportedVersion = 1;
 // Leave room for the surrounding quotes and any escape expansion inside the
@@ -143,6 +149,12 @@ class IndexReader {
       book.meta.language.assign(text);
     } else if (bookKey == "genre") {
       book.meta.genre.assign(text);
+    } else if (bookKey == "year") {
+      book.meta.year.assign(text);
+    } else if (bookKey == "publisher") {
+      book.meta.publisher.assign(text);
+    } else if (bookKey == "pages") {
+      book.meta.pages.assign(text);
     } else if (bookKey == "format") {
       book.format = bookFormatFromName(text);
     }
@@ -269,6 +281,15 @@ void serializeIndex(const ShelfIndex& index, std::string& out) {
     out.push_back(',');
     appendKey(out, "genre");
     appendString(out, book.meta.genre);
+    out.push_back(',');
+    appendKey(out, "year");
+    appendString(out, book.meta.year);
+    out.push_back(',');
+    appendKey(out, "publisher");
+    appendString(out, book.meta.publisher);
+    out.push_back(',');
+    appendKey(out, "pages");
+    appendString(out, book.meta.pages);
     out.push_back(',');
     appendKey(out, "metaOk");
     out += book.metaOk ? "true" : "false";

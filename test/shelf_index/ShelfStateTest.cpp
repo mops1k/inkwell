@@ -20,6 +20,45 @@ TEST(ShelfState, RoundTripsFilterAndSort) {
   EXPECT_EQ(shelf::SortKey::Author, parsed.sort);
 }
 
+TEST(ShelfState, RoundTripsDirection) {
+  shelf::LibraryState state;
+  state.sort = shelf::SortKey::Size;
+  state.descending = true;
+  std::string payload;
+  shelf::serializeLibraryState(state, payload);
+
+  shelf::LibraryState parsed;
+  ASSERT_TRUE(shelf::parseLibraryState(payload, parsed));
+  EXPECT_EQ(shelf::SortKey::Size, parsed.sort);
+  EXPECT_TRUE(parsed.descending);
+
+  // A state written before directions existed must still load: it means ascending.
+  const std::string legacy = "{\"version\":1,\"field\":\"none\",\"value\":\"\",\"sort\":\"author\",\"hidden\":[]}\n";
+  shelf::LibraryState legacyState;
+  ASSERT_TRUE(shelf::parseLibraryState(legacy, legacyState));
+  EXPECT_EQ(shelf::SortKey::Author, legacyState.sort);
+  EXPECT_FALSE(legacyState.descending);
+}
+
+TEST(ShelfState, RoundTripsViewAndDefaultsToGrid) {
+  shelf::LibraryState state;
+  state.view = "list";
+  std::string payload;
+  shelf::serializeLibraryState(state, payload);
+
+  shelf::LibraryState parsed;
+  ASSERT_TRUE(shelf::parseLibraryState(payload, parsed));
+  EXPECT_EQ("list", parsed.view);
+
+  // A state written before the list existed has no view key: the grid is the
+  // default, not an empty string that the shelf would have to guess about.
+  const std::string legacy = "{\"version\":1,\"field\":\"none\",\"value\":\"\",\"sort\":\"title\",\"hidden\":[]}\n";
+  shelf::LibraryState legacyState;
+  legacyState.view = "sentinel";
+  ASSERT_TRUE(shelf::parseLibraryState(legacy, legacyState));
+  EXPECT_EQ("grid", legacyState.view);
+}
+
 TEST(ShelfState, RoundTripsHiddenBooks) {
   shelf::LibraryState state;
   state.hiddenPaths = {"/books/system/readme.txt", "/books/notes.txt"};

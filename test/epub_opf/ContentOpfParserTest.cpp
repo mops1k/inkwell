@@ -145,6 +145,36 @@ TEST(ContentOpfParser, ExtractsMetadataManifestAndGuideFields) {
   EXPECT_EQ(parser.guideCoverPageHref, "book/OEBPS/text/cover.xhtml");
 }
 
+TEST(ContentOpfParser, ExtractsPublicationMetadata) {
+  const std::string cacheDir = makeTempDir();
+  ASSERT_FALSE(cacheDir.empty());
+  TempDirGuard dirGuard(cacheDir);
+
+  const std::string base = "/book/OEBPS/";
+  const std::string xml =
+      "<?xml version='1.0' encoding='utf-8'?>"
+      "<package xmlns:opf='http://www.idpf.org/2007/opf' xmlns:dc='http://purl.org/dc/elements/1.1/'>"
+      "<metadata>"
+      "<dc:title>T</dc:title>"
+      "<dc:date>1984-06-08</dc:date>"
+      "<dc:date>1999</dc:date>"
+      "<dc:publisher>ACME Books</dc:publisher>"
+      "<meta property='dcterms:extent'>320 pages</meta>"
+      // The first declaration wins; a second extent must not overwrite it.
+      "<meta property='dcterms:extent' content='999 pages'/>"
+      "</metadata>"
+      "<manifest><item id='ch1' href='ch1.xhtml' media-type='application/xhtml+xml'/></manifest>"
+      "<spine><itemref idref='ch1'/></spine>"
+      "</package>";
+
+  ContentOpfParser parser(cacheDir, base, xml.size(), nullptr);
+  ASSERT_TRUE(parseOpfXml(parser, xml));
+
+  EXPECT_EQ(parser.date, "1984-06-08");
+  EXPECT_EQ(parser.publisher, "ACME Books");
+  EXPECT_EQ(parser.extent, "320 pages");
+}
+
 TEST(ContentOpfParser, DecodesNumericCharacterReferencesInDescription) {
   const std::string cacheDir = makeTempDir();
   ASSERT_FALSE(cacheDir.empty());

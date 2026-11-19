@@ -32,6 +32,9 @@ class ShelfScene : public Scene {
   // the frame shows the filtered state without scripting key presses.
   void applyDemoFilter();
 
+  // Renders the list presentation instead of the grid (the shelf_list scene).
+  void useListView();
+
  private:
   // One fixture book keeps the shelf cell and the metadata the filter menu
   // needs; the device reads the same fields from ShelfIndex.
@@ -53,6 +56,10 @@ class ShelfScene : public Scene {
   void openCategories();
   void openValues();
   void activateItem();
+  // The browse row above the grid, as the device draws it: labels carry the
+  // book count, `active` is the browse in effect, the cursor is the scenario's.
+  std::vector<shelfui::ChipView> buildChips() const;
+  int activeChip() const;  // 0 = all books, 1 = authors, 2 = series, 3 = genres
 
   std::vector<Book> books_;
   std::vector<std::string> values_;
@@ -62,6 +69,9 @@ class ShelfScene : public Scene {
   int menuIndex_ = 0;
   int categoryIndex_ = 0;
   int selected_ = 0;
+  bool chipsFocused_ = false;
+  int chipIndex_ = 0;
+  bool listView_ = false;
 };
 
 }  // namespace uisim

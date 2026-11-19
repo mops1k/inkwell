@@ -31,10 +31,42 @@ ShelfScene::ShelfScene() {
 shelfui::GridMetrics ShelfScene::gridMetrics(const GfxRenderer& renderer) const {
   const ThemeMetrics& metrics = UITheme::getInstance().getMetrics();
   // The theme owns the chrome, so the grid gets whatever the theme leaves free:
-  // the content box minus the header. No hardcoded 40/56 pixel bands.
+  // the content box minus the header, minus the browse row — exactly the rule
+  // ShelfActivity::updateLayout follows.
   const Rect content = UITheme::getContentRect(renderer, /*hasBottomHints=*/true, /*hasSideHints=*/true);
   const int top = content.y + metrics.headerHeight + metrics.verticalSpacing;
-  return shelfui::gridMetrics(shelfui::GridArea{content.x, top, content.width, content.y + content.height - top});
+  const shelfui::GridArea pageArea{content.x, top, content.width, content.y + content.height - top};
+  return shelfui::gridMetrics(shelfui::gridAreaForCells(pageArea));
+}
+
+// Same four presets the device shows, with the counts a book library would have:
+// the harness is a demo of the interaction, not a second implementation of the
+// counting rule (the device gets them from LibraryQuery).
+std::vector<shelfui::ChipView> ShelfScene::buildChips() const {
+  int authors = 0;
+  int series = 0;
+  int genres = 0;
+  for (const auto& book : books_) {
+    if (!book.cell.author.empty()) ++authors;
+    if (!book.series.empty()) ++series;
+    if (!book.genre.empty()) ++genres;
+  }
+  const auto chip = [](const char* label, int count) {
+    char buffer[48];
+    std::snprintf(buffer, sizeof(buffer), "%s (%d)", label, count);
+    shelfui::ChipView view;
+    view.label = buffer;
+    return view;
+  };
+  return {chip("Все книги", static_cast<int>(books_.size())), chip("Авторы", authors), chip("Серии", series),
+          chip("Жанры", genres)};
+}
+
+int ShelfScene::activeChip() const {
+  if (filterField_ == "Автор") return 1;
+  if (filterField_ == "Серия") return 2;
+  if (filterField_ == "Жанр") return 3;
+  return 0;
 }
 
 int ShelfScene::pageStart(const shelfui::GridMetrics& metrics) const {
@@ -50,6 +82,8 @@ void ShelfScene::useCovers(const std::vector<std::string>& covers) {
     books_[i].cell.coverPath = covers[i];
   }
 }
+
+void ShelfScene::useListView() { listView_ = true; }
 
 void ShelfScene::applyDemoFilter() {
   filterField_ = "Автор";
@@ -149,6 +183,25 @@ void ShelfScene::activateItem() {
 
 void ShelfScene::onKey(const std::string& key) {
   const int columns = shelfui::gridMetrics(shelfui::GridArea{}).columns;
+  if (key == "FocusChips") {
+    chipsFocused_ = true;
+    chipIndex_ = activeChip();
+    return;
+  }
+  if (chipsFocused_) {
+    // Same model as the device: Left/Right move inside the row, Confirm applies
+    // the browse, Down/Back hand the keys back to the grid.
+    if (key == "Left") chipIndex_ = (chipIndex_ + 3) % 4;
+    if (key == "Right") chipIndex_ = (chipIndex_ + 1) % 4;
+    if (key == "Down" || key == "Back") chipsFocused_ = false;
+    if (key == "Confirm") {
+      static constexpr const char* kFields[] = {"", "Автор", "Серия", "Жанр"};
+      filterField_ = kFields[chipIndex_];
+      filterValue_.clear();
+      selected_ = 0;
+    }
+    return;
+  }
   if (key == "FilterMenu") {
     openCategories();
     return;
@@ -188,7 +241,13 @@ void ShelfScene::render(GfxRenderer& renderer) const {
                    subtitle.empty() ? nullptr : subtitle.c_str());
 
   const shelfui::GridMetrics grid = gridMetrics(renderer);
-  const int capacity = shelfui::pageCapacity(grid);
+  // The list lays the same content area out as rows; both presentations share the
+  // page model, so only the capacity and the draw call differ.
+  const int pageTopForRows = content.y + metrics.headerHeight + metrics.verticalSpacing;
+  const shelfui::GridArea cellsArea = shelfui::gridAreaForCells(
+      shelfui::GridArea{content.x, pageTopForRows, content.width, content.y + content.height - pageTopForRows});
+  const shelfui::RowMetrics rows = shelfui::listMetrics(cellsArea);
+  const int capacity = listView_ ? shelfui::listPageCapacity(rows) : shelfui::pageCapacity(grid);
   const int start = pageStart(grid);
   const int count = std::min(capacity, static_cast<int>(view.size()) - start);
 
@@ -198,6 +257,13 @@ void ShelfScene::render(GfxRenderer& renderer) const {
   for (int i = 0; i < std::max(0, count); ++i) cells.push_back(books_[view[static_cast<size_t>(start + i)]].cell);
 
   shelfui::PageView page;
+  const int pageTop = content.y + metrics.headerHeight + metrics.verticalSpacing;
+  page.pageArea = shelfui::GridArea{content.x, pageTop, content.width, content.y + content.height - pageTop};
+  const std::vector<shelfui::ChipView> chips = buildChips();
+  page.chips.chips = chips.data();
+  page.chips.count = chips.size();
+  page.chips.active = activeChip();
+  if (chipsFocused_) page.chips.focused = chipIndex_;
   page.cells = cells.data();
   page.count = cells.size();
   page.selected = selected_ - start;
@@ -205,7 +271,13 @@ void ShelfScene::render(GfxRenderer& renderer) const {
   page.pageCount = std::max(1, (static_cast<int>(view.size()) + capacity - 1) / capacity);
   page.emptyText = "Книг не найдено";
   page.noCoverText = "Нет обложки";
-  shelfui::drawShelfPage(renderer, grid, page);
+  const std::string footer = "Книг: " + std::to_string(view.size()) + ", Сортировать по: Имени (по возр.)";
+  page.footerText = footer.c_str();
+  if (listView_) {
+    shelfui::drawShelfListPage(renderer, rows, page);
+  } else {
+    shelfui::drawShelfPage(renderer, grid, page);
+  }
 
   if (overlay_ != Overlay::None) shelfui::drawOverlayList(renderer, overlayItems(), menuIndex_);
 

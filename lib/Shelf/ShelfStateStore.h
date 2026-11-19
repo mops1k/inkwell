@@ -13,6 +13,12 @@ namespace shelf {
 struct LibraryState {
   LibraryFilter filter;
   SortKey sort = SortKey::Title;
+  // Reverse order of `sort`. Stored per library, not per key: the user chose a
+  // direction and it must survive a reboot exactly like the field itself.
+  bool descending = false;
+  // Presentation of the library ("grid" or "list"), stored as a stable name so
+  // the shelf layer never depends on a UI enum. Unknown values fall back to grid.
+  std::string view = "grid";
   std::vector<std::string> hiddenPaths;
 };
 

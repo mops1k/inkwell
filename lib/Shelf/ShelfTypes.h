@@ -37,6 +37,16 @@ struct BookMeta {
   std::string seriesIndex;
   std::string language;
   std::string genre;  // first genre/subject; drives the shelf's genre filter
+  // Publication data as the container declares it: FB2 <publish-info><year>/
+  // <publisher>, EPUB dc:date/dc:publisher. Empty when the file carries none —
+  // the book card simply omits the line.
+  std::string year;
+  std::string publisher;
+  // Page count the file itself declares (EPUB dcterms:extent or page-map.xml).
+  // Never derived from a layout: a device-rendered page depends on font and
+  // margins, so a computed number would be a different quantity with the same
+  // name. Empty for FB2/TXT/MD/XTC, which have no such declaration.
+  std::string pages;
   // Short blurb for the book card: EPUB <dc:description>, FB2 <annotation>.
   // Empty when the file has none — the card then simply omits the section.
   std::string description;

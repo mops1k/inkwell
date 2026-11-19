@@ -34,6 +34,9 @@ TEST(ShelfJson, RoundTripsEveryField) {
   book.meta.seriesIndex = "2";
   book.meta.language = "ru";
   book.meta.genre = "sf_history";
+  book.meta.year = "1965";
+  book.meta.publisher = "Художественная литература";
+  book.meta.pages = "632";
   book.metaOk = true;
   index.books.push_back(book);
 
@@ -60,6 +63,9 @@ TEST(ShelfJson, RoundTripsEveryField) {
   EXPECT_EQ(book.meta.seriesIndex, got.meta.seriesIndex);
   EXPECT_EQ(book.meta.language, got.meta.language);
   EXPECT_EQ(book.meta.genre, got.meta.genre);
+  EXPECT_EQ(book.meta.year, got.meta.year);
+  EXPECT_EQ(book.meta.publisher, got.meta.publisher);
+  EXPECT_EQ(book.meta.pages, got.meta.pages);
   EXPECT_EQ(book.metaOk, got.metaOk);
 }
 

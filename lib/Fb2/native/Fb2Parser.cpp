@@ -315,6 +315,7 @@ bool Fb2Parser::scan(IByteReader& reader, Fb2ScanResult& out, size_t xmlBufferSi
 
   bool inDescription = false;
   bool inTitleInfo = false;
+  bool inPublishInfo = false;
   bool inAuthorTag = false;
   bool inAnnotation = false;
   bool inCoverpage = false;
@@ -361,6 +362,15 @@ bool Fb2Parser::scan(IByteReader& reader, Fb2ScanResult& out, size_t xmlBufferSi
         inDescription = true;
       else if (name == "title-info" && inDescription)
         inTitleInfo = true;
+      else if (name == "publish-info" && inDescription)
+        inPublishInfo = true;
+      // Publication data lives in <description><publish-info>, a sibling of
+      // <title-info>: the shelf card shows the year and publisher the file
+      // declares, and the year also feeds the "по году" sort.
+      else if (name == "publisher" && inPublishInfo)
+        activeTarget = &out.metadata.publisher;
+      else if (name == "year" && inPublishInfo)
+        activeTarget = &out.metadata.year;
       else if (name == "author" && inTitleInfo) {
         inAuthorTag = true;
         curAuthor = Fb2Author{};
@@ -492,6 +502,10 @@ bool Fb2Parser::scan(IByteReader& reader, Fb2ScanResult& out, size_t xmlBufferSi
         inDescription = false;
       else if (name == "title-info")
         inTitleInfo = false;
+      else if (name == "publish-info")
+        inPublishInfo = false;
+      else if (name == "publisher" || name == "year")
+        activeTarget = nullptr;
       else if (name == "author" && inAuthorTag) {
         out.metadata.authors.push_back(curAuthor);
         std::string display = formatAuthorName(curAuthor);

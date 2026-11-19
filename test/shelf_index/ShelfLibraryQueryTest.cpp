@@ -142,21 +142,31 @@ TEST(LibraryQuery, SortsByLastOpened) {
   std::vector<uint16_t> out;
 
   // index order: 0 Братья, 1 Анна, 2 Дюна, 3 Заметки. 0 = never opened.
-  std::vector<uint32_t> epochs(index.books.size(), 0);
-  epochs[0] = 1000;
-  epochs[2] = 3000;
-  epochs[1] = 2000;
+  std::vector<shelf::SortStat> stats(index.books.size());
+  stats[0].lastOpenedEpoch = 1000;
+  stats[2].lastOpenedEpoch = 3000;
+  stats[1].lastOpenedEpoch = 2000;
 
+  // The direction is the user's choice; "recently opened" naturally starts at
+  // newest-first, which is what the picker pre-selects (naturalDescending).
   shelf::LibraryQuery byRecent;
   byRecent.sort = shelf::SortKey::LastOpened;
-  byRecent.apply(index, out, &epochs);
+  byRecent.descending = true;
+  byRecent.apply(index, out, &stats);
   ASSERT_EQ(index.books.size(), out.size());
   EXPECT_EQ("Дюна", index.books[out[0]].meta.title);  // newest first
   EXPECT_EQ("Анна Каренина", index.books[out[1]].meta.title);
   EXPECT_EQ("Братья Карамазовы", index.books[out[2]].meta.title);
   EXPECT_EQ("Заметки", index.books[out[3]].meta.title);  // never opened goes last
 
-  // Without epoch data the sort degrades to title order, never to garbage.
+  // The opposite direction is a real order, not the same list twice — and books
+  // that were never opened still stay at the end.
+  byRecent.descending = false;
+  byRecent.apply(index, out, &stats);
+  EXPECT_EQ("Братья Карамазовы", index.books[out[0]].meta.title);
+  EXPECT_EQ("Заметки", index.books[out[3]].meta.title);
+
+  // Without statistics the sort degrades to title order, never to garbage.
   byRecent.apply(index, out, nullptr);
   ASSERT_EQ(index.books.size(), out.size());
   EXPECT_EQ("Анна Каренина", index.books[out[0]].meta.title);
@@ -185,13 +195,72 @@ TEST(LibraryQuery, HiddenBooksAreExcluded) {
   EXPECT_NE(std::find(values.begin(), values.end(), "Достоевский"), values.end());
 }
 
+// Reading status is derived from the statistics snapshot, never from metadata:
+// 100 % is finished, anything in between is "reading", and a book that was never
+// opened (or sits at 0 %) is unread, because "непрочитанные" is about the text.
+TEST(LibraryQuery, FiltersByReadingStatus) {
+  const shelf::ShelfIndex index = makeIndex();
+  std::vector<shelf::SortStat> stats(index.books.size());
+  stats[0].progressPercent = 100;  // Братья
+  stats[1].progressPercent = 35;   // Анна
+  stats[2].progressPercent = 0;    // Дюна — was opened, still 0 %
+  stats[2].lastOpenedEpoch = 42;
+  // Заметки — нет истории вовсе.
+
+  const auto titlesFor = [&](shelf::ReadingStatus status) {
+    shelf::LibraryQuery query;
+    query.filter = {shelf::FilterField::ReadingStatus, shelf::readingStatusName(status)};
+    std::vector<uint16_t> out;
+    query.apply(index, out, &stats);
+    std::vector<std::string> titles;
+    for (const uint16_t id : out) titles.push_back(index.books[id].meta.title);
+    return titles;
+  };
+
+  const auto finished = titlesFor(shelf::ReadingStatus::Finished);
+  ASSERT_EQ(1u, finished.size());
+  EXPECT_EQ("Братья Карамазовы", finished[0]);
+
+  const auto reading = titlesFor(shelf::ReadingStatus::Reading);
+  ASSERT_EQ(1u, reading.size());
+  EXPECT_EQ("Анна Каренина", reading[0]);
+
+  const auto unread = titlesFor(shelf::ReadingStatus::Unread);
+  ASSERT_EQ(2u, unread.size());
+
+  // Without statistics no book can claim a status, so the bucket is empty
+  // instead of silently listing everything.
+  shelf::LibraryQuery noStats;
+  noStats.filter = {shelf::FilterField::ReadingStatus, shelf::readingStatusName(shelf::ReadingStatus::Unread)};
+  std::vector<uint16_t> out;
+  noStats.apply(index, out, nullptr);
+  EXPECT_TRUE(out.empty());
+
+  // The picker always lists all three buckets, each with its own count.
+  std::vector<shelf::FilterValueCount> counts;
+  shelf::LibraryQuery query;
+  query.collectValueCounts(index, shelf::FilterField::ReadingStatus, counts, 200, &stats);
+  ASSERT_EQ(3u, counts.size());
+  EXPECT_EQ("unread", counts[0].value);
+  EXPECT_EQ(2, counts[0].count);
+  EXPECT_EQ("reading", counts[1].value);
+  EXPECT_EQ(1, counts[1].count);
+  EXPECT_EQ("finished", counts[2].value);
+  EXPECT_EQ(1, counts[2].count);
+}
+
 TEST(LibraryQuery, NamesRoundTrip) {
   for (const auto field : {shelf::FilterField::Author, shelf::FilterField::Series, shelf::FilterField::Genre,
-                           shelf::FilterField::Format}) {
+                           shelf::FilterField::Format, shelf::FilterField::ReadingStatus}) {
     EXPECT_EQ(field, shelf::filterFieldFromName(shelf::filterFieldName(field)));
   }
   EXPECT_EQ(shelf::FilterField::None, shelf::filterFieldFromName("nonsense"));
-  for (const auto key : {shelf::SortKey::Title, shelf::SortKey::Author, shelf::SortKey::LastOpened}) {
+  for (const auto status :
+       {shelf::ReadingStatus::Unread, shelf::ReadingStatus::Reading, shelf::ReadingStatus::Finished}) {
+    EXPECT_EQ(status, shelf::readingStatusFromName(shelf::readingStatusName(status)));
+  }
+  for (size_t i = 0; i < shelf::kSortKeyCount; ++i) {
+    const shelf::SortKey key = shelf::sortKeys()[i];
     EXPECT_EQ(key, shelf::sortKeyFromName(shelf::sortKeyName(key)));
   }
   EXPECT_EQ(shelf::SortKey::Title, shelf::sortKeyFromName("nonsense"));
@@ -248,4 +317,156 @@ TEST(LibraryQuery, FiltersByFormatLabel) {
   EXPECT_EQ(values[0], "EPUB");
   EXPECT_EQ(values[1], "FB2");
   EXPECT_EQ(values[2], "TXT");
+}
+
+// The browse row shows how many books carry a value for that dimension; hidden
+// books do not count, exactly like the value lists below it.
+TEST(LibraryQuery, CountsBooksPerDimension) {
+  const shelf::ShelfIndex index = makeIndex();
+  shelf::LibraryQuery query;
+
+  EXPECT_EQ(3, query.countWith(index, shelf::FilterField::Author));
+  EXPECT_EQ(3, query.countWith(index, shelf::FilterField::Series));
+  EXPECT_EQ(3, query.countWith(index, shelf::FilterField::Genre));
+  // The fixture books carry no detected format, so the format label is empty and
+  // the dimension counts zero books — the same rule the format filter follows.
+  EXPECT_EQ(0, query.countWith(index, shelf::FilterField::Format));
+
+  query.hiddenPaths = {"/books/c.epub"};
+  EXPECT_EQ(2, query.countWith(index, shelf::FilterField::Author));
+  EXPECT_EQ(0, query.countWith(index, shelf::FilterField::Format));
+  EXPECT_EQ(0, query.countWith(index, shelf::FilterField::None));
+}
+
+// The direction flips the primary key only: the same books come back, in the
+// mirror order, and the tie-break by title still holds.
+TEST(LibraryQuery, DirectionFlipsPrimaryKeyOnly) {
+  const shelf::ShelfIndex index = makeIndex();
+  std::vector<uint16_t> ascending;
+  std::vector<uint16_t> descending;
+
+  shelf::LibraryQuery query;
+  query.sort = shelf::SortKey::Title;
+  query.apply(index, ascending);
+  query.descending = true;
+  query.apply(index, descending);
+
+  ASSERT_EQ(ascending.size(), descending.size());
+  ASSERT_EQ(ascending.size(), 4u);
+  EXPECT_EQ("Анна Каренина", index.books[ascending.front()].meta.title);
+  EXPECT_EQ("Анна Каренина", index.books[descending.back()].meta.title);
+  EXPECT_EQ(ascending.front(), descending.back());
+  EXPECT_EQ(ascending.back(), descending.front());
+  EXPECT_EQ("Заметки", index.books[descending.front()].meta.title);
+}
+
+// Series order is the series name, then the number inside it, then the title.
+// Books without a series stay last in both directions.
+TEST(LibraryQuery, SortsBySeriesThenNumber) {
+  shelf::ShelfIndex index;
+  const auto book = [](const char* path, const char* title, const char* series, const char* number) {
+    shelf::ShelfBook b;
+    b.path = path;
+    b.meta.title = title;
+    b.meta.series = series;
+    b.meta.seriesIndex = number;
+    b.metaOk = true;
+    return b;
+  };
+  index.books.push_back(book("/b/three.fb2", "Третья", "Цикл", "3"));
+  index.books.push_back(book("/b/solo.fb2", "Одиночная", "", ""));
+  index.books.push_back(book("/b/one.fb2", "Первая", "Цикл", "1"));
+  index.books.push_back(book("/b/other.fb2", "Другой цикл", "Другое", "1"));
+  index.books.push_back(book("/b/two.fb2", "Вторая", "Цикл", "2"));
+
+  std::vector<uint16_t> out;
+  shelf::LibraryQuery query;
+  query.sort = shelf::SortKey::Series;
+  query.apply(index, out);
+  ASSERT_EQ(out.size(), 5u);
+  // "Другое" fold-compares before "Цикл"; inside "Цикл" the numbers order the books.
+  EXPECT_EQ("/b/other.fb2", index.books[out[0]].path);
+  EXPECT_EQ("/b/one.fb2", index.books[out[1]].path);
+  EXPECT_EQ("/b/two.fb2", index.books[out[2]].path);
+  EXPECT_EQ("/b/three.fb2", index.books[out[3]].path);
+  // A book with no series is not a name that ordering can place: it stays last.
+  EXPECT_EQ("/b/solo.fb2", index.books[out[4]].path);
+
+  // Inside one series the numbers decide; the unnumbered book sits after them.
+  std::vector<uint16_t> cycle;
+  shelf::LibraryQuery inCycle;
+  inCycle.sort = shelf::SortKey::Series;
+  inCycle.filter = {shelf::FilterField::Series, "Цикл"};
+  inCycle.apply(index, cycle);
+  ASSERT_EQ(cycle.size(), 3u);
+  EXPECT_EQ("Первая", index.books[cycle[0]].meta.title);
+  EXPECT_EQ("Вторая", index.books[cycle[1]].meta.title);
+  EXPECT_EQ("Третья", index.books[cycle[2]].meta.title);
+
+  // Descending reverses the series order but never pulls "no series" to the front.
+  inCycle.filter.clear();
+  inCycle.descending = true;
+  inCycle.apply(index, out);
+  ASSERT_EQ(out.size(), 5u);
+  EXPECT_EQ("/b/three.fb2", index.books[out.front()].path);
+  EXPECT_EQ("/b/solo.fb2", index.books[out.back()].path);
+}
+
+TEST(LibraryQuery, SortsBySizeAddedProgressAndYear) {
+  shelf::ShelfIndex index = makeIndex();
+  index.books[0].size = 500;
+  index.books[1].size = 100;
+  index.books[2].size = 900;
+  index.books[3].size = 300;
+  index.books[0].fatDateTime = 0x12;  // ascending FAT timestamps
+  index.books[1].fatDateTime = 0x30;
+  index.books[2].fatDateTime = 0x05;
+  index.books[3].fatDateTime = 0x22;
+  index.books[0].meta.year = "1965";
+  index.books[1].meta.year = "1880";
+  index.books[2].meta.year = "";
+  index.books[3].meta.year = "1984";
+
+  std::vector<shelf::SortStat> stats(index.books.size());
+  stats[0].progressPercent = 40;
+  stats[1].progressPercent = 90;
+  stats[2].progressPercent = 0;
+  stats[3].progressPercent = 10;
+
+  std::vector<uint16_t> out;
+  shelf::LibraryQuery query;
+
+  query.sort = shelf::SortKey::Size;
+  query.descending = true;
+  query.apply(index, out);
+  EXPECT_EQ(900u, index.books[out.front()].size);
+
+  query.sort = shelf::SortKey::Added;
+  query.apply(index, out);
+  EXPECT_EQ(0x30u, index.books[out.front()].fatDateTime);
+
+  query.sort = shelf::SortKey::Progress;
+  query.apply(index, out);
+  EXPECT_EQ(90, stats[out.front()].progressPercent);
+
+  query.sort = shelf::SortKey::Year;
+  query.descending = false;
+  query.apply(index, out);
+  EXPECT_EQ("1880", index.books[out[0]].meta.year);
+  EXPECT_EQ("1965", index.books[out[1]].meta.year);
+  EXPECT_EQ("1984", index.books[out[2]].meta.year);
+  EXPECT_EQ("", index.books[out[3]].meta.year);  // no year declared: last
+}
+
+// The picker pre-selects these, so a wrong table would turn "Недавние" into
+// "oldest first" without the user doing anything.
+TEST(LibraryQuery, NaturalDirectionsMatchTheUsefulEnd) {
+  EXPECT_FALSE(shelf::naturalDescending(shelf::SortKey::Title));
+  EXPECT_FALSE(shelf::naturalDescending(shelf::SortKey::Author));
+  EXPECT_FALSE(shelf::naturalDescending(shelf::SortKey::Series));
+  EXPECT_TRUE(shelf::naturalDescending(shelf::SortKey::LastOpened));
+  EXPECT_TRUE(shelf::naturalDescending(shelf::SortKey::Progress));
+  EXPECT_TRUE(shelf::naturalDescending(shelf::SortKey::Size));
+  EXPECT_TRUE(shelf::naturalDescending(shelf::SortKey::Added));
+  EXPECT_TRUE(shelf::naturalDescending(shelf::SortKey::Year));
 }

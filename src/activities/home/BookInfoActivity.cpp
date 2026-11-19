@@ -29,6 +29,7 @@
 #include "activities/shelf/ShelfGridRenderer.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include <BookFormat.h>
 
 namespace {
 
@@ -150,6 +151,9 @@ void BookInfoActivity::loadData() {
   series = seed_.series;
   seriesIndex = seed_.seriesIndex;
   genre = seed_.genre;
+  year = seed_.year;
+  publisher = seed_.publisher;
+  pages = seed_.pages;
   description.clear();
   coverBmpPath = seed_.coverPath;
 
@@ -194,6 +198,9 @@ void BookInfoActivity::loadData() {
         if (!scanned.seriesIndex.empty()) seriesIndex = scanned.seriesIndex;
         if (!scanned.genre.empty()) genre = scanned.genre;
         if (!scanned.description.empty()) description = scanned.description;
+        if (!scanned.year.empty()) year = scanned.year;
+        if (!scanned.publisher.empty()) publisher = scanned.publisher;
+        if (!scanned.pages.empty()) pages = scanned.pages;
         loadSucceeded = true;
         handledByScanner = true;
       } else {
@@ -233,6 +240,9 @@ void BookInfoActivity::loadData() {
       seriesIndex = epub.getSeriesIndex();
       description = epub.getDescription();
       genre = epub.getGenre();
+      year = epub.getYear();
+      publisher = epub.getPublisher();
+      pages = epub.getPages();
       // FB2 packages are read through the EPUB wrapper, whose generated OPF does
       // not carry the source <genre> or the <annotation>, so fall back to the
       // shelf's own FB2 scanner rather than showing empty rows for every FB2 card.
@@ -301,6 +311,9 @@ void BookInfoActivity::loadData() {
   if (series.empty()) series = seed_.series;
   if (seriesIndex.empty()) seriesIndex = seed_.seriesIndex;
   if (genre.empty()) genre = seed_.genre;
+  if (year.empty()) year = seed_.year;
+  if (publisher.empty()) publisher = seed_.publisher;
+  if (pages.empty()) pages = seed_.pages;
   if (coverBmpPath.empty()) coverBmpPath = seed_.coverPath;
 
   // Opened from the book menu ("Информация") there is no seed, and the FB2
@@ -590,7 +603,11 @@ void BookInfoActivity::loop() {
   // cache as the cell thumbnail and reused from then on. A seeded cell-sized
   // thumb is only a stand-in for the first frame, so it is upgraded exactly once
   // after the parse — never regenerated on later visits.
-  if (!coverTried_ && loadSucceeded) {
+  // Only formats that carry artwork may upgrade the card image: for TXT/Markdown
+  // the same helper writes a thumbnail of the first *page*, which the card used
+  // to draw as a cover — a dense text page scaled to the frame reads as a black
+  // block. Text books keep the framed title placeholder instead.
+  if (!coverTried_ && loadSucceeded && shelf::formatHasArtwork(shelf::detectBookFormat(filePath))) {
     coverTried_ = true;
     const auto& metrics = UITheme::getInstance().getMetrics();
     const std::string cardThumbPath = ReaderActivity::bookCacheDir(filePath) + "/" +
@@ -797,6 +814,25 @@ void BookInfoActivity::render(RenderLock&&) {
     }
     metaY += 2;
   }
+
+  // Publication rows: the container declares them or they do not appear at all,
+  // so a book without dc:date does not reserve an empty line above its size.
+  // One lambda, one layout rule — the three rows cannot drift apart.
+  const auto drawPublicationRow = [&](const char* label, const std::string& value) {
+    if (value.empty()) return;
+    const std::string line = std::string(label) + ": " + value;
+    const auto lines = renderer.wrappedText(UI_10_FONT_ID, line.c_str(), metaWidth, 2);
+    for (const auto& wrapped : lines) {
+      if (metaY + lineHeightSmall > contentBottom) break;
+      const std::string fitted = renderer.truncatedText(UI_10_FONT_ID, wrapped.c_str(), metaWidth);
+      renderer.drawText(UI_10_FONT_ID, metaX, metaY, fitted.c_str());
+      metaY += lineHeightSmall;
+    }
+    metaY += 2;
+  };
+  drawPublicationRow(tr(STR_YEAR), year);
+  drawPublicationRow(tr(STR_PUBLISHER), publisher);
+  drawPublicationRow(tr(STR_PAGES), pages);
 
   if (fileSizeBytes > 0) {
     const std::string sizeStr = formatFileSize(fileSizeBytes);

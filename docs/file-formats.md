@@ -2,7 +2,14 @@
 
 ## `book.bin`
 
-### Version 7
+### Version 14
+
+Current version is 14. This document's ImHex pattern was written for version 7 and has been
+extended field by field since; the authoritative list of metadata strings is the one below
+(version 14 adds `year`, `publisher` and `pages` for the shelf's book card). A mismatch on
+the version byte invalidates the cache and the book is re-indexed on next open.
+
+### Version 7 (original pattern, extended below)
 
 ImHex Pattern:
 
@@ -12,7 +19,7 @@ import std.string;
 import std.core;
 
 // === Configuration ===
-#define EXPECTED_VERSION 7
+#define EXPECTED_VERSION 14
 #define MAX_STRING_LENGTH 65535
 
 // === String Structure ===
@@ -40,6 +47,10 @@ struct Metadata {
     String series [[comment("Series name")]];
     String seriesIndex [[comment("Series index/position")]];
     String description [[comment("Book description / blurb")]];
+    String genre [[comment("First dc:subject — the shelf's genre filter")]];
+    String year [[comment("Publication year (four digits) from dc:date")]];
+    String publisher [[comment("dc:publisher")]];
+    String pages [[comment("Page count the book declares (dcterms:extent or page-map.xml); empty when it declares none")]];
 } [[comment("Book metadata information")]];
 
 // === Spine Entry Structure ===

@@ -55,6 +55,9 @@ class Epub {
   bool parseTocNcxFile() const;
   bool parseTocNavFile() const;
   bool parsePageMapFile() const;
+  // Entry count of the printed-page list the book ships (pagelist.bin), as a
+  // decimal string; empty when there is no such list.
+  std::string printedPageCount() const;
   void parseCssFiles() const;
   void discoverCssFilesFromZip();
 
@@ -154,6 +157,13 @@ class Epub {
   const std::string& getSeriesIndex() const;
   const std::string& getDescription() const;
   const std::string& getGenre() const;
+  // Publication data as the book declares it (stored in book.bin): the
+  // four-digit year from dc:date, dc:publisher, and a page count ONLY when the
+  // file states one (dcterms:extent or page-map.xml). An empty string means
+  // "the book does not say", which is the normal case for most EPUBs.
+  const std::string& getYear() const;
+  const std::string& getPublisher() const;
+  const std::string& getPages() const;
   std::string getCoverBmpPath(bool cropped = false) const;
   std::string getCoverImageCachePath() const;
   // Returns the raw ZIP entry path for the cover image (empty if none).

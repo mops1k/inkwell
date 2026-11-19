@@ -26,6 +26,9 @@ class ContentOpfParser final : public Print {
     IN_BOOK_LANGUAGE,
     IN_BOOK_DESCRIPTION,
     IN_BOOK_GENRE,
+    IN_BOOK_DATE,
+    IN_BOOK_PUBLISHER,
+    IN_BOOK_EXTENT,
     IN_BOOK_SERIES,
     IN_BOOK_SERIES_INDEX,
     IN_MANIFEST,
@@ -147,6 +150,11 @@ class ContentOpfParser final : public Print {
   std::string language;
   std::string description;
   std::string genre;  // first dc:subject, for the shelf's genre filter
+  // Publication data for the book card. Kept verbatim and normalised by the
+  // caller (year = first four digits, pages = the declared page count only).
+  std::string date;       // first dc:date
+  std::string publisher;  // first dc:publisher
+  std::string extent;     // <meta property="dcterms:extent"> text, e.g. "320 pages"
   std::string series;
   std::string seriesIndex;
   std::string tocNcxPath;

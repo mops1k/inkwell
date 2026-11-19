@@ -26,12 +26,12 @@ class BookMetadataCacheRecovery : public ::testing::Test {
     out.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
   }
   static std::vector<unsigned char> valid() {
-    // Version 13, metadata boundary 46: 10-byte header (1 version + 4 lutOffset
-    // + 2 spineCount + 2 tocCount + 1 tocReliable) + nine empty strings.
-    // v13 added `genre` to the metadata block.
-    std::vector<unsigned char> bytes(46, 0);
-    bytes[0] = 13;
-    bytes[1] = 46;
+    // Version 14, metadata boundary 58: 10-byte header (1 version + 4 lutOffset
+    // + 2 spineCount + 2 tocCount + 1 tocReliable) + twelve empty strings
+    // (4-byte length prefix each). v14 added year/publisher/pages.
+    std::vector<unsigned char> bytes(58, 0);
+    bytes[0] = 14;
+    bytes[1] = 58;
     return bytes;
   }
 };

@@ -45,6 +45,11 @@ struct Fb2Metadata {
   std::string sequenceName;        // <sequence name="..."> if present
   uint32_t sequenceNumber = 0;
 
+  // <description><publish-info>: the year and the publisher as the file states
+  // them. Both stay empty when the block is absent (many FB2 files omit it).
+  std::string year;
+  std::string publisher;
+
   // Raw CSS text from <description><stylesheet type="text/css">...</stylesheet>,
   // if the producer embedded one (mirrors the `embeddedStyle` cache-busting
   // flag EPUB sections already carry per docs/file-formats.md — same idea:

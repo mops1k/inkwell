@@ -23,6 +23,12 @@ class BookMetadataCache {
     std::string seriesIndex;
     std::string description;
     std::string genre;  // first dc:subject (EPUB) — shelf genre filter
+    // Publication data for the shelf's book card: the year and publisher the
+    // book declares, and the page count only when the file states one
+    // (dcterms:extent or page-map.xml). Empty means "the book does not say".
+    std::string year;
+    std::string publisher;
+    std::string pages;
   };
 
   struct SpineEntry {

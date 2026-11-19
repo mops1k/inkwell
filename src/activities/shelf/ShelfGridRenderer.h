@@ -19,6 +19,16 @@
 // away from the rest of the UI.
 namespace shelfui {
 
+// Drawable area the caller reserved for the grid (theme content rect minus the
+// header). Keeping it explicit is what lets the shelf honour the theme's hint
+// bar instead of guessing the footer height.
+struct GridArea {
+  int x = 16;
+  int y = 52;
+  int width = 528 - 32;
+  int height = 792 - 52 - 44;
+};
+
 // One visible cell. coverPath is a BMP the cover service already produced; an
 // empty path means "no cover yet" and the cell draws its frame instead.
 struct CellView {
@@ -29,27 +39,62 @@ struct CellView {
   int progressPercent = -1;  // -1 unknown, otherwise 0..100
 };
 
+// One chip of the browse row above the grid. The label already carries its count
+// ("Авторы (12)"): the renderer links no translations, the caller owns the text.
+struct ChipView {
+  std::string label;
+};
+
+// The browse row: "Все / Авторы / Серии / Жанры" (the Android library's view
+// presets). `active` is the browse currently in effect and is drawn inverted;
+// `focused` is the keyboard cursor, drawn as a frame, and is -1 when the row is
+// not focused. Two indicators, because "where I am" and "what is applied" are
+// different questions on a button-only device.
+struct ChipsRow {
+  const ChipView* chips = nullptr;
+  size_t count = 0;
+  int active = 0;
+  int focused = -1;
+};
+
+constexpr int kChipsRowHeight = 34;
+// Footer strip: book count and sort order on the left, page counter on the
+// right. Reserved out of the page area so the cells never overdraw it.
+constexpr int kFooterHeight = 20;
+
+// The area the cells are laid out in: the page minus the browse row and the
+// footer strip.
+GridArea gridAreaForCells(const GridArea& area);
+// Where the chip row itself is drawn (the top strip of the page area).
+Rect chipsRowBounds(const GridArea& area);
+// Where the footer sits (the bottom strip of the page area).
+Rect footerRowBounds(const GridArea& area);
+// Draws the row. No-op when the row has no chips.
+void drawChipsRow(GfxRenderer& renderer, const GridArea& pageArea, const ChipsRow& row);
+
 struct PageView {
   const CellView* cells = nullptr;
   size_t count = 0;
   int selected = 0;  // index into cells, -1 when the page is empty
   int page = 0;      // zero-based
   int pageCount = 1;
+  // The whole page area and the browse row drawn in its top strip. Cells are laid
+  // out by `metrics`, which is already the reduced (below-chips) area.
+  GridArea pageArea{};
+  ChipsRow chips;
   const char* emptyText = "";
+  // What Confirm does in that empty state ("Обновить библиотеку" / "Снять
+  // фильтр"), drawn under the empty text so the screen states the way out
+  // instead of leaving the user on a dead grid.
+  const char* emptyActionText = "";
+  // Left half of the footer line: how many books the current view holds and how
+  // they are ordered. The caller owns the string (i18n lives there, the renderer
+  // is shared with the host harness, which links no translations).
+  const char* footerText = "";
   // Drawn inside an empty cover frame when the book has no title of its own.
   // A string, not an i18n lookup: this file is shared with the host harness,
   // which links no translations.
   const char* noCoverText = "";
-};
-
-// Drawable area the caller reserved for the grid (theme content rect minus the
-// header). Keeping it explicit is what lets the shelf honour the theme's hint
-// bar instead of guessing the footer height.
-struct GridArea {
-  int x = 16;
-  int y = 52;
-  int width = 528 - 32;
-  int height = 792 - 52 - 44;
 };
 
 // Geometry of the grid, derived from the area so a size or theme change does not
@@ -70,7 +115,33 @@ GridMetrics gridMetrics(const GridArea& area);
 // How many books fit on one page.
 int pageCapacity(const GridMetrics& metrics);
 
-// Draws cells, selection frame and the page counter. Assumes the caller already
+// How the library presents its books. Both presentations share the page model
+// (cells, selection, footer, browse row): the mode only changes the geometry and
+// the drawing of one page, so the activity keeps one focus model.
+enum class ShelfView : uint8_t { Grid = 0, List };
+
+const char* shelfViewName(ShelfView view);      // stable JSON name, never UI text
+ShelfView shelfViewFromName(std::string_view name);
+
+// One line per book: mini cover, title, author, progress and format badge. Four to
+// six rows fit where the grid shows two, which is why this mode exists on a slow
+// panel — more books per refresh, no artwork decoding.
+struct RowMetrics {
+  GridArea area;
+  int rowHeight = 76;
+  int rows = 4;
+};
+
+RowMetrics listMetrics(const GridArea& area);
+int listPageCapacity(const RowMetrics& metrics);
+Rect listRowBounds(const RowMetrics& metrics, int indexInPage);
+// One row of the list presentation, shared by the full page draw and the partial
+// refresh when the focus moves, so both stay identical.
+void drawShelfRow(GfxRenderer& renderer, const RowMetrics& metrics, const CellView& cell, int indexInPage,
+                  int selected, const char* noCoverText);
+void drawShelfListPage(GfxRenderer& renderer, const RowMetrics& metrics, const PageView& page);
+
+// Draws cells, selection frame and the page footer. Assumes the caller already
 // cleared the frame and drew the theme chrome; the caller also presents it.
 void drawShelfPage(GfxRenderer& renderer, const GridMetrics& metrics, const PageView& page);
 

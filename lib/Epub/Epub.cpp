@@ -61,6 +61,42 @@ class AbortablePrint final : public Print {
   }
 };
 
+// The publication year as four digits ("1984", "1984-06-08",
+// "1984-06-08T00:00:00Z"). A value that does not start with four digits yields
+// an empty year: the shelf card then shows nothing instead of a half-parsed date.
+std::string declaredYear(const std::string& raw) {
+  const size_t first = raw.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos || raw.size() - first < 4) return {};
+  for (size_t i = 0; i < 4; ++i) {
+    if (!std::isdigit(static_cast<unsigned char>(raw[first + i]))) return {};
+  }
+  return raw.substr(first, 4);
+}
+
+// A page count the book declares ("320 pages", "320"). Only a leading integer
+// is accepted: dcterms:extent also carries file sizes ("1.2 MB"), and a size
+// must never be shown as a page count.
+std::string declaredPages(const std::string& raw) {
+  const size_t first = raw.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) return {};
+  size_t end = first;
+  while (end < raw.size() && std::isdigit(static_cast<unsigned char>(raw[end])) && (end - first) < 5) ++end;
+  if (end == first) return {};
+  if (end < raw.size()) {
+    const char next = raw[end];
+    if (next == '.' || next == ',') return {};  // decimal: a size, not pages
+    std::string unit;
+    for (size_t i = end; i < raw.size() && unit.size() < 8; ++i) {
+      const char ch = static_cast<char>(std::tolower(static_cast<unsigned char>(raw[i])));
+      if (ch != ' ' && ch != '\t') unit.push_back(ch);
+    }
+    for (const char* marker : {"mb", "kb", "gb", "byte", "байт", "кб", "мб"}) {
+      if (unit.rfind(marker, 0) == 0) return {};
+    }
+  }
+  return raw.substr(first, end - first);
+}
+
 // Wrapper around ImageFormatDetector that reads from file and seeks to origin
 ImageFormatDetector::Format detectCoverImageFormat(FsFile& imageFile) {
   if (!imageFile || !imageFile.seek(0)) {
@@ -177,6 +213,9 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, OpfCac
   bookMetadata.seriesIndex = opfParser.seriesIndex;
   bookMetadata.description = opfParser.description;
   bookMetadata.genre = opfParser.genre;
+  bookMetadata.year = declaredYear(opfParser.date);
+  bookMetadata.publisher = opfParser.publisher;
+  bookMetadata.pages = declaredPages(opfParser.extent);
 
   // Guide-based cover fallback: if no cover found via metadata/properties,
   // or if the manifest-declared cover path is invalid, try extracting the image
@@ -799,6 +838,11 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
 
   // Build final book.bin
   const uint32_t buildStart = millis();
+  // A printed page list the book ships is the file's own page count; it fills
+  // the field only when dcterms:extent did not already give a number.
+  if (bookMetadata.pages.empty()) {
+    bookMetadata.pages = printedPageCount();
+  }
   if (!bookMetadataCache->buildBookBin(filepath, bookMetadata, unpackedPackage)) {
     LOG_ERR("EBP", "Could not update mappings and sizes");
     return false;
@@ -1024,6 +1068,44 @@ const std::string& Epub::getGenre() const {
     return blank;
   }
   return bookMetadataCache->coreMetadata.genre;
+}
+
+const std::string& Epub::getYear() const {
+  static std::string blank;
+  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
+    return blank;
+  }
+  return bookMetadataCache->coreMetadata.year;
+}
+
+const std::string& Epub::getPublisher() const {
+  static std::string blank;
+  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
+    return blank;
+  }
+  return bookMetadataCache->coreMetadata.publisher;
+}
+
+const std::string& Epub::getPages() const {
+  static std::string blank;
+  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
+    return blank;
+  }
+  return bookMetadataCache->coreMetadata.pages;
+}
+
+// The count of a printed-page list the book ships (NCX/nav page-list or EPUB
+// 2.01 page-map.xml): the file's own page numbering, not a layout-derived one.
+// Read from the u16 header pagelist.bin starts with; empty when the book has no
+// printed page list at all.
+std::string Epub::printedPageCount() const {
+  FsFile file;
+  if (!Storage.openFileForRead("EBP", cachePath + "/pagelist.bin", file)) return {};
+  uint16_t count = 0;
+  const size_t read = file.read(&count, sizeof(count));
+  file.close();
+  if (read != sizeof(count) || count == 0) return {};
+  return std::to_string(count);
 }
 
 std::string Epub::getCoverBmpPath(bool cropped) const {

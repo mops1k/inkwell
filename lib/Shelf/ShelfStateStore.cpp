@@ -50,6 +50,8 @@ class StateReader {
     state.filter.value = value;
     if (!state.filter.active()) state.filter.clear();  // a field without a value is "all books"
     state.sort = sortKeyFromName(sortName);
+    state.descending = descending;
+    state.view = viewName.empty() ? "grid" : viewName;
     state.hiddenPaths = std::move(hiddenPaths);
     target = std::move(state);
     return true;
@@ -65,7 +67,7 @@ class StateReader {
   static void numberTrampoline(void* ctx, const char* value, size_t len) {
     static_cast<StateReader*>(ctx)->handleNumber(value, len);
   }
-  static void boolTrampoline(void*, bool) {}
+  static void boolTrampoline(void* ctx, bool value) { static_cast<StateReader*>(ctx)->handleBool(value); }
   static void nullTrampoline(void*) {}
   static void objectStartTrampoline(void* ctx) { static_cast<StateReader*>(ctx)->depth++; }
   static void objectEndTrampoline(void* ctx) {
@@ -97,6 +99,14 @@ class StateReader {
       value.assign(text, len);
     else if (key == "sort")
       sortName.assign(text, len);
+    else if (key == "view")
+      viewName.assign(text, len);
+  }
+
+  void handleBool(bool value) {
+    // Absent in a document written before directions existed: that state simply
+    // means "ascending", so an old file loads without losing the sort field.
+    if (depth == 1 && key == "descending") descending = value;
   }
 
   void handleNumber(const char* text, size_t len) {
@@ -114,12 +124,14 @@ class StateReader {
   std::string fieldName;
   std::string value;
   std::string sortName;
+  std::string viewName;
   std::vector<std::string> hiddenPaths;
   int depth = 0;
   int version = -1;
   bool sawVersion = false;
   bool rootClosed = false;
   bool inHiddenArray = false;
+  bool descending = false;
 };
 
 std::string dirOf(const std::string& file) {
@@ -142,6 +154,10 @@ void serializeLibraryState(const LibraryState& state, std::string& out) {
   appendEscaped(out, state.filter.active() ? state.filter.value : std::string_view{});
   out += ",\"sort\":";
   appendEscaped(out, sortKeyName(state.sort));
+  out += ",\"descending\":";
+  out += state.descending ? "true" : "false";
+  out += ",\"view\":";
+  appendEscaped(out, state.view);
   out += ",\"hidden\":[";
   for (size_t i = 0; i < state.hiddenPaths.size(); ++i) {
     if (i > 0) out.push_back(',');

@@ -48,13 +48,34 @@ class ShelfActivity final : public Activity {
   // Short Back opens the main menu over the grid, in the same list widget as the
   // filters (the user asked for the menu to look like the filter popup). The
   // library itself is absent from it: the library IS the main screen now.
-  enum class MenuAction : uint8_t { Files, Recents, Opds, Transfer, Settings, Hidden, Refresh, Count };
+  enum class MenuAction : uint8_t { Files, Recents, Opds, Transfer, Settings, Hidden, View, Refresh, Count };
 
   // Overlays share one list widget: the book menu and the filter picker differ
   // only in their item labels and the action a Confirm runs.
-  enum class Overlay : uint8_t { None, BookMenu, FilterCategories, FilterValues, HiddenBooks, Menu };
+  enum class Overlay : uint8_t {
+    None,
+    BookMenu,
+    FilterCategories,
+    FilterValues,
+    HiddenBooks,
+    Menu,
+    SortFields,
+    SortDirection
+  };
 
   void rebuildIndex();
+  // Books per page for the current presentation. One entry point: navigation,
+  // page building and the footer all ask this instead of guessing the mode.
+  int pageCapacity() const;
+  // Browse row above the grid: "Все / Авторы / Серии / Жанры". Up from the top
+  // row focuses it, Left/Right move, Confirm applies. Independent of the
+  // long-Back filter overlay: the row answers "which view", the overlay narrows
+  // the view by a concrete value.
+  enum class Chip : uint8_t { All = 0, Authors, Series, Genres, Count };
+  void buildChips();
+  void applyChip(Chip chip);
+  bool focusChips(bool focused);  // returns true when the focus actually moved
+  bool syncPartialChipsRefresh();
   shelf::ShelfScanOptions scanOptions() const;  // /books + SD root + OPDS downloads folder
   void updateLayout();                          // content rect + grid metrics for the current theme chrome
   void refreshPage();                           // rebuilds cells_ for the current page, resolves covers
@@ -70,6 +91,12 @@ class ShelfActivity final : public Activity {
   void setHidden(const std::string& path, bool hidden);
   void openMainMenu();
   void runMenuAction(MenuAction action);
+  // What Confirm does when the grid is empty: rescan, drop the filter, or show
+  // the hidden books. None when there is something to open.
+  enum class EmptyAction : uint8_t { None, Rescan, ClearFilter, ShowHidden };
+  EmptyAction emptyAction() const;
+  void runEmptyAction();
+  const char* emptyActionLabel(EmptyAction action) const;
   const std::vector<std::string>& overlayItems() const;
   void activateOverlayItem(Overlay source, int index);
   void drawMenu();
@@ -94,6 +121,17 @@ class ShelfActivity final : public Activity {
   // was the grid's remaining hesitation.
   shelfui::CoverWorker coverWorker_;
   shelfui::GridMetrics metrics_;
+  // The same page area, laid out as rows for the list presentation.
+  shelfui::RowMetrics rowMetrics_;
+  shelfui::ShelfView shelfView_ = shelfui::ShelfView::Grid;
+  // The full page area (grid + browse row) and the row's own contents.
+  shelfui::GridArea pageArea_{};
+  std::vector<shelfui::ChipView> chips_;
+  bool chipsFocused_ = false;
+  int chipIndex_ = 0;
+  int chipsWindowRefreshes_ = 0;
+  bool chipsMoved_ = false;  // the last change was a move inside the row
+  static constexpr int kMaxChipsWindowRefreshes = 12;
   std::vector<shelfui::CellView> cells_;
   // Cells whose artwork arrived while the page was already on screen: they get a
   // full re-render (cover pixels changed), unlike a focus move that only redraws
@@ -105,8 +143,16 @@ class ShelfActivity final : public Activity {
   int lastSelectedLocal_ = -1;
   // Indices into index_.books in display order; the grid talks only to this.
   std::vector<uint16_t> view_;
-  // Values of the currently opened filter field (FilterValues overlay only).
+  // Values of the currently opened filter field (FilterValues overlay only) and
+  // their display labels — the label carries the book count, the raw value is
+  // what gets stored in the query, so they are kept in parallel.
   std::vector<std::string> filterValues_;
+  std::vector<std::string> filterValueLabels_;
+  // Footer line built in render(): owned here so PageView can point at it.
+  std::string footerText_;
+  // Reading statistics aligned with index_.books, rebuilt in applyQuery():
+  // progress/last-read sort keys and the reading-status filter read it.
+  std::vector<shelf::SortStat> stats_;
   std::vector<MenuAction> menuActions_;
   std::vector<std::string> menuLabels_;
   // Hidden books survive rescans: paths live in the saved view state, the index
@@ -139,4 +185,9 @@ class ShelfActivity final : public Activity {
   Overlay overlay_ = Overlay::None;
   int menuIndex_ = 0;
   int selected_ = 0;  // index into view_
+  // The sort picker is two steps (field, then direction) and both are collected
+  // before the library changes: choosing a field only stages it here, so backing
+  // out of the direction step leaves the current sort untouched.
+  shelf::SortKey pendingSort_ = shelf::SortKey::Title;
+  bool pendingDescending_ = false;
 };

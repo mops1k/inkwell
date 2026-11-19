@@ -97,12 +97,14 @@ std::unique_ptr<uisim::Scene> makeScene(const Options& options) {
   if (options.scene == "menu") {
     return std::make_unique<uisim::MenuScene>();
   }
-  if (options.scene != "shelf" && options.scene != "shelf_filter") {
-    std::fprintf(stderr, "unknown scene '%s' (expected shelf, shelf_filter or menu)\n", options.scene.c_str());
+  if (options.scene != "shelf" && options.scene != "shelf_filter" && options.scene != "shelf_list") {
+    std::fprintf(stderr, "unknown scene '%s' (expected shelf, shelf_filter, shelf_list or menu)\n",
+                 options.scene.c_str());
     return nullptr;
   }
   auto shelf = std::make_unique<uisim::ShelfScene>();
   if (options.scene == "shelf_filter") shelf->applyDemoFilter();
+  if (options.scene == "shelf_list") shelf->useListView();
   // Real 2-bit BMP artwork, written next to the frames: the grid then exercises
   // the same Bitmap + drawBitmap path the device uses for generated covers.
   const std::vector<std::string> covers = uisim::writeFixtureCovers(options.outDir + "/covers");

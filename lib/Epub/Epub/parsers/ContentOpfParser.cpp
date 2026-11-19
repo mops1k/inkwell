@@ -416,6 +416,22 @@ void ContentOpfParser::startElement(void* userData, const char* name, const char
     return;
   }
 
+  if (self->state == IN_METADATA && strcmp(name, "dc:date") == 0) {
+    // The first dc:date is the publication date by convention; the card shows
+    // its year only (see Epub::getYear).
+    if (self->date.empty()) {
+      self->state = IN_BOOK_DATE;
+    }
+    return;
+  }
+
+  if (self->state == IN_METADATA && strcmp(name, "dc:publisher") == 0) {
+    if (self->publisher.empty()) {
+      self->state = IN_BOOK_PUBLISHER;
+    }
+    return;
+  }
+
   if (self->state == IN_PACKAGE && isManifestTag(name)) {
     self->state = IN_MANIFEST;
     if (!Storage.openFileForWrite("COF", self->cachePath + itemCacheFile, self->tempItemStore)) {
@@ -517,6 +533,16 @@ void ContentOpfParser::startElement(void* userData, const char* name, const char
               trim(std::string(metaContent, std::min(strlen(metaContent), size_t{MAX_DESCRIPTION_LENGTH})));
         } else {
           self->state = IN_BOOK_SERIES_INDEX;
+          return;
+        }
+      }
+      // dcterms:extent carries the declared page count when the producer wrote
+      // one ("320 pages"); Epub::getPages accepts it only if it is a number.
+      if (strcmp(metaProperty, "dcterms:extent") == 0 && self->extent.empty()) {
+        if (metaContent) {
+          self->extent = trim(std::string(metaContent, std::min(strlen(metaContent), size_t{MAX_DESCRIPTION_LENGTH})));
+        } else {
+          self->state = IN_BOOK_EXTENT;
           return;
         }
       }
@@ -706,6 +732,30 @@ void ContentOpfParser::characterData(void* userData, const char* s, const int le
     return;
   }
 
+  if (self->state == IN_BOOK_DATE) {
+    if (self->date.size() < MAX_DESCRIPTION_LENGTH) {
+      const size_t remaining = MAX_DESCRIPTION_LENGTH - self->date.size();
+      self->date.append(s, std::min(static_cast<size_t>(len), remaining));
+    }
+    return;
+  }
+
+  if (self->state == IN_BOOK_PUBLISHER) {
+    if (self->publisher.size() < MAX_DESCRIPTION_LENGTH) {
+      const size_t remaining = MAX_DESCRIPTION_LENGTH - self->publisher.size();
+      self->publisher.append(s, std::min(static_cast<size_t>(len), remaining));
+    }
+    return;
+  }
+
+  if (self->state == IN_BOOK_EXTENT) {
+    if (self->extent.size() < MAX_DESCRIPTION_LENGTH) {
+      const size_t remaining = MAX_DESCRIPTION_LENGTH - self->extent.size();
+      self->extent.append(s, std::min(static_cast<size_t>(len), remaining));
+    }
+    return;
+  }
+
   if (self->state == IN_BOOK_SERIES) {
     if (self->series.size() < MAX_DESCRIPTION_LENGTH) {
       const size_t remaining = MAX_DESCRIPTION_LENGTH - self->series.size();
@@ -774,6 +824,24 @@ void ContentOpfParser::endElement(void* userData, const char* name) {
 
   if (self->state == IN_BOOK_GENRE && strcmp(name, "dc:subject") == 0) {
     self->genre = trim(self->genre);
+    self->state = IN_METADATA;
+    return;
+  }
+
+  if (self->state == IN_BOOK_DATE && strcmp(name, "dc:date") == 0) {
+    self->date = trim(self->date);
+    self->state = IN_METADATA;
+    return;
+  }
+
+  if (self->state == IN_BOOK_PUBLISHER && strcmp(name, "dc:publisher") == 0) {
+    self->publisher = trim(self->publisher);
+    self->state = IN_METADATA;
+    return;
+  }
+
+  if (self->state == IN_BOOK_EXTENT && isMetaTag(name)) {
+    self->extent = trim(self->extent);
     self->state = IN_METADATA;
     return;
   }

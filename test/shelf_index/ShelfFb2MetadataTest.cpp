@@ -55,6 +55,26 @@ TEST(ShelfFb2, ReadsMetadataFromZipArchive) {
   EXPECT_FALSE(meta.title.empty());
 }
 
+// <publish-info> carries the publication year and the publisher; the card shows
+// them verbatim and the year also feeds the "по году" sort.
+TEST(ShelfFb2, ReadsPublicationInfo) {
+  shelf::BookMeta meta;
+  ASSERT_TRUE(shelf::readFb2Metadata(shelfFixture("fb2_cp1251.fb2"), shelf::BookFormat::Fb2, meta));
+  EXPECT_EQ("1965", meta.year);
+  EXPECT_EQ("Художественная литература", meta.publisher);
+  // FB2 has no page declaration: an empty field, not a guessed number.
+  EXPECT_TRUE(meta.pages.empty());
+}
+
+// Without <publish-info> the year falls back to the four digits of
+// <title-info><date>; the publisher stays empty instead of borrowing text.
+TEST(ShelfFb2, PublicationYearFallsBackToTitleInfoDate) {
+  shelf::BookMeta meta;
+  ASSERT_TRUE(shelf::readFb2Metadata(shelfFixture("fb2_date_only.fb2"), shelf::BookFormat::Fb2, meta));
+  EXPECT_EQ("1984", meta.year);
+  EXPECT_TRUE(meta.publisher.empty());
+}
+
 TEST(ShelfFb2, RejectsBrokenContainers) {
   shelf::BookMeta meta;
   // Valid zip, but no *.fb2 entry inside.

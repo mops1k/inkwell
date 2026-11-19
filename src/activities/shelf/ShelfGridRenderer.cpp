@@ -55,17 +55,28 @@ void drawPlaceholderCover(GfxRenderer& renderer, const CellView& cell, const cha
   const std::string label = cell.title.empty() ? std::string(noCoverText) : cell.title;
   if (label.empty()) return;
   constexpr int kPadding = 12;
+  // A card-sized frame has room for a readable title and a caption explaining the
+  // empty frame; a 180x240 shelf cell does not, so it keeps the small font only.
+  const bool roomy = height >= 220;
+  const int titleFont = roomy ? kHeaderFont : SMALL_FONT_ID;
+  const bool caption = roomy && noCoverText != nullptr && noCoverText[0] != '\0' && label != noCoverText;
   const int textWidth = std::max(1, width - kPadding * 2);
-  const int lineHeight = renderer.getLineHeight(SMALL_FONT_ID);
-  const int maxLines = std::max(1, (height - kPadding * 2) / lineHeight);
-  const auto lines = renderer.wrappedText(SMALL_FONT_ID, label.c_str(), textWidth, maxLines);
-  int textY = y + (height - static_cast<int>(lines.size()) * lineHeight) / 2;
+  const int lineHeight = renderer.getLineHeight(titleFont);
+  const int captionHeight = caption ? renderer.getLineHeight(kCaptionFont) + 6 : 0;
+  const int maxLines = std::max(1, (height - kPadding * 2 - captionHeight) / lineHeight);
+  const auto lines = renderer.wrappedText(titleFont, label.c_str(), textWidth, maxLines);
+  int textY = y + (height - static_cast<int>(lines.size()) * lineHeight - captionHeight) / 2;
   for (const auto& line : lines) {
     // Centered inside the cell, not on the panel: drawCenteredText centres on the
     // screen, which put the title of an empty cell in the middle of the page.
-    const int lineWidth = renderer.getTextWidth(SMALL_FONT_ID, line.c_str());
-    renderer.drawText(SMALL_FONT_ID, x + (width - lineWidth) / 2, textY, line.c_str());
+    const int lineWidth = renderer.getTextWidth(titleFont, line.c_str());
+    renderer.drawText(titleFont, x + (width - lineWidth) / 2, textY, line.c_str());
     textY += lineHeight;
+  }
+  if (caption) {
+    textY += 2;
+    const int captionWidth = renderer.getTextWidth(kCaptionFont, noCoverText);
+    renderer.drawText(kCaptionFont, x + (width - captionWidth) / 2, textY, noCoverText);
   }
 }
 
@@ -165,8 +176,51 @@ void drawProgress(GfxRenderer& renderer, int x, int y, int width, int progressPe
 
 }  // namespace
 
-GridMetrics gridMetrics(const GridArea& area) {
-  // A cell keeps the 3:4 book-cover ratio; the width is what adapts. With two
+GridArea gridAreaForCells(const GridArea& area) {
+  GridArea grid = area;
+  grid.y += kChipsRowHeight + 6;
+  grid.height -= kChipsRowHeight + 6 + kFooterHeight;
+  if (grid.height < 1) grid.height = 1;
+  return grid;
+}
+
+Rect chipsRowBounds(const GridArea& area) { return Rect{area.x, area.y, area.width, kChipsRowHeight}; }
+
+Rect footerRowBounds(const GridArea& area) {
+  return Rect{area.x, area.y + area.height - kFooterHeight, area.width, kFooterHeight};
+}
+
+void drawChipsRow(GfxRenderer& renderer, const GridArea& pageArea, const ChipsRow& row) {
+  if (row.chips == nullptr || row.count == 0) return;
+  const int lineHeight = renderer.getLineHeight(kCaptionFont);
+  const int chipHeight = kChipsRowHeight - 6;
+  const int textY = pageArea.y + (chipHeight - lineHeight) / 2 + 2;
+  int x = pageArea.x;
+  for (size_t i = 0; i < row.count; ++i) {
+    const std::string& label = row.chips[i].label;
+    const int chipWidth = renderer.getTextWidth(kCaptionFont, label.c_str()) + 16;
+    // A chip that would spill off the panel is not drawn: a clipped label reads as
+    // a broken key hint, and the counts only ever grow.
+    if (x + chipWidth > pageArea.x + pageArea.width) break;
+    const Rect chip{x, pageArea.y + 2, chipWidth, chipHeight};
+    if (static_cast<int>(i) == row.active) {
+      // Active browse: inverted, exactly the focus plate the cells use.
+      renderer.fillRect(chip.x, chip.y, chip.width, chip.height, true);
+      renderer.drawText(kCaptionFont, chip.x + 8, textY, label.c_str(), false);
+    } else {
+      renderer.drawText(kCaptionFont, chip.x + 8, textY, label.c_str(), true);
+    }
+    if (static_cast<int>(i) == row.focused) {
+      // Keyboard cursor: a frame outside the chip, so it stays visible on top of
+      // an inverted (active) chip and never hides the label.
+      renderer.drawRect(chip.x - 2, chip.y - 2, chip.width + 4, chip.height + 4, true);
+    }
+    x += chipWidth + 8;
+  }
+}
+
+GridMetrics gridMetrics(
+    const GridArea& area) {  // A cell keeps the 3:4 book-cover ratio; the width is what adapts. With two
   // fixed 180px cells the leftover width used to become one huge gutter between
   // them, which read as a half-empty page — a third column fits there instead.
   constexpr int kBaseCellW = 180;
@@ -270,18 +324,156 @@ void drawShelfCell(GfxRenderer& renderer, const GridMetrics& metrics, const Cell
                     fitCellAuthor(renderer, metrics, cell.author), indexInPage == selected);
 }
 
-void drawShelfPage(GfxRenderer& renderer, const GridMetrics& metrics, const PageView& page) {
-  const GridArea& area = metrics.area;
+namespace {
 
-  // Page counter only: the header above it belongs to the theme.
+// Footer strip, shared by both presentations: the view's book count and order on
+// the left, the page counter on the right — the footer the Android library shows
+// ("143 книги · Сортировка: Автор").
+void drawFooterStrip(GfxRenderer& renderer, const PageView& page) {
+  const Rect footer = footerRowBounds(page.pageArea);
+  if (footer.width <= 0) return;
   char counter[24];
   std::snprintf(counter, sizeof(counter), "%d/%d", page.page + 1, std::max(1, page.pageCount));
   const int counterWidth = renderer.getTextWidth(kCaptionFont, counter);
-  renderer.drawText(kCaptionFont, area.x + area.width - counterWidth, area.y, counter);
+  renderer.drawText(kCaptionFont, footer.x + footer.width - counterWidth, footer.y, counter);
+  if (page.footerText == nullptr || page.footerText[0] == '\0') return;
+  // Never let the two halves collide: the footer yields, the page counter stays
+  // whole (it is the cue that tells the user more books exist).
+  const int room = footer.width - counterWidth - 16;
+  if (room <= 40) return;
+  const std::string fitted = renderer.truncatedText(kCaptionFont, page.footerText, room);
+  renderer.drawText(kCaptionFont, footer.x, footer.y, fitted.c_str());
+}
 
+// Empty page: the reason plus the action that fixes it, both centred — "why it is
+// empty" and "what to do about it" in one glance.
+void drawEmptyPage(GfxRenderer& renderer, const GridArea& area, const PageView& page) {
+  const int textWidth = renderer.getTextWidth(kCaptionFont, page.emptyText);
+  const int textY = area.y + area.height / 2;
+  renderer.drawText(kCaptionFont, area.x + (area.width - textWidth) / 2, textY, page.emptyText);
+  if (page.emptyActionText == nullptr || page.emptyActionText[0] == '\0') return;
+  const int actionWidth = renderer.getTextWidth(kCaptionFont, page.emptyActionText);
+  const int actionY = textY + renderer.getLineHeight(kCaptionFont) + 8;
+  constexpr int kFramePad = 10;
+  const int frameX = area.x + (area.width - actionWidth) / 2;
+  renderer.drawRect(frameX - kFramePad, actionY - 4, actionWidth + kFramePad * 2,
+                    renderer.getLineHeight(kCaptionFont) + 8, true);
+  renderer.drawText(kCaptionFont, frameX, actionY, page.emptyActionText);
+}
+
+}  // namespace
+
+void drawShelfRow(GfxRenderer& renderer, const RowMetrics& metrics, const CellView& cell, int indexInPage, int selected,
+                  const char* noCoverText) {
+  const Rect row = listRowBounds(metrics, indexInPage);
+  const bool focused = indexInPage == selected;
+  const int coverHeight = metrics.rowHeight - 12;
+  const int coverWidth = coverHeight * 3 / 4;
+  const Rect cover{row.x + 4, row.y + 6, coverWidth, coverHeight};
+  const int rightPad = 10;
+  const int rightEdge = row.x + row.width - rightPad;
+  const int textX = cover.x + cover.width + 10;
+
+  // Right column is measured first: its width is what the title has to fit into.
+  std::string percent;
+  if (cell.progressPercent >= 0) percent = std::to_string(cell.progressPercent) + "%";
+  int rightWidth = 0;
+  if (!percent.empty()) rightWidth = renderer.getTextWidth(kCaptionFont, percent.c_str());
+  if (!cell.format.empty())
+    rightWidth = std::max(rightWidth, renderer.getTextWidth(kCaptionFont, cell.format.c_str()) + 10);
+  const int textWidth = std::max(40, rightEdge - rightWidth - 12 - textX);
+
+  if (cell.coverPath.empty()) {
+    // A row without artwork keeps a plain frame: at 57px tall a centred title
+    // would be unreadable, and the title is already on the row itself.
+    renderer.drawRect(cover.x, cover.y, cover.width, cover.height, true);
+  } else {
+    HalFile coverFile = Storage.open(cell.coverPath.c_str());
+    if (coverFile) {
+      Bitmap bmp(coverFile);
+      if (bmp.parseHeaders() == BmpReaderError::Ok && bmp.getWidth() > 0 && bmp.getHeight() > 0) {
+        renderer.drawBitmap(bmp, cover.x, cover.y, coverWidth, coverHeight, 0, 0, true);
+      }
+      coverFile.close();
+    }
+  }
+
+  const int titleHeight = renderer.getLineHeight(kHeaderFont);
+  const int authorHeight = renderer.getLineHeight(kCaptionFont);
+  const int blockHeight = titleHeight + 2 + (cell.author.empty() ? 0 : authorHeight);
+  int textY = row.y + (metrics.rowHeight - blockHeight) / 2;
+  // Focus is an inverted plate behind the text block, the same cue the grid uses
+  // for a caption: it reads instantly and the window refresh stays small.
+  if (focused) renderer.fillRect(textX - 5, textY - 4, textWidth + 10, blockHeight + 8, true);
+  const std::string title =
+      fitText(renderer, kHeaderFont, cell.title.empty() ? std::string(noCoverText) : cell.title, textWidth);
+  renderer.drawText(kHeaderFont, textX, textY, title.c_str(), !focused);
+  if (!cell.author.empty()) {
+    const std::string author = fitText(renderer, kCaptionFont, cell.author, textWidth);
+    renderer.drawText(kCaptionFont, textX, textY + titleHeight + 2, author.c_str(), !focused);
+  }
+
+  // The right column carries two things at once — the progress line and the
+  // format badge — and they are stacked, not centred independently: at 76 px a
+  // centred "100%" and a bottom-anchored badge overlapped each other.
+  const int captionHeight = renderer.getLineHeight(kCaptionFont);
+  const int chipHeight = cell.format.empty() ? 0 : captionHeight + 6;
+  const int chipY = row.y + metrics.rowHeight - chipHeight - 6;
+  if (!percent.empty()) {
+    const int percentY = chipHeight > 0 ? chipY - captionHeight - 2 : row.y + (metrics.rowHeight - captionHeight) / 2;
+    renderer.drawText(kCaptionFont, rightEdge - renderer.getTextWidth(kCaptionFont, percent.c_str()), percentY,
+                      percent.c_str());
+  }
+  if (chipHeight > 0) {
+    const int chipWidth = renderer.getTextWidth(kCaptionFont, cell.format.c_str()) + 10;
+    renderer.drawRect(rightEdge - chipWidth, chipY, chipWidth, chipHeight, true);
+    renderer.drawText(kCaptionFont, rightEdge - chipWidth + 5, chipY + 3, cell.format.c_str());
+  }
+
+  if (focused) renderer.drawRect(row.x, row.y, row.width, row.height, true);
+  renderer.drawLine(row.x, row.y + row.height - 1, row.x + row.width, row.y + row.height - 1);
+}
+
+const char* shelfViewName(ShelfView view) { return view == ShelfView::List ? "list" : "grid"; }
+
+ShelfView shelfViewFromName(std::string_view name) { return name == "list" ? ShelfView::List : ShelfView::Grid; }
+
+RowMetrics listMetrics(const GridArea& area) {
+  RowMetrics metrics;
+  metrics.area = area;
+  // 76 px: two text lines plus artwork, and six rows on the 528×792 panel — three
+  // times what the grid shows, which is what makes this mode fast to scan.
+  metrics.rowHeight = 76;
+  metrics.rows = std::max(1, area.height / metrics.rowHeight);
+  return metrics;
+}
+
+int listPageCapacity(const RowMetrics& metrics) { return std::max(1, metrics.rows); }
+
+Rect listRowBounds(const RowMetrics& metrics, int indexInPage) {
+  return Rect{metrics.area.x, metrics.area.y + indexInPage * metrics.rowHeight, metrics.area.width, metrics.rowHeight};
+}
+
+void drawShelfListPage(GfxRenderer& renderer, const RowMetrics& metrics, const PageView& page) {
+  drawChipsRow(renderer, page.pageArea, page.chips);
+  drawFooterStrip(renderer, page);
   if (page.count == 0 || page.cells == nullptr) {
-    const int textWidth = renderer.getTextWidth(kCaptionFont, page.emptyText);
-    renderer.drawText(kCaptionFont, area.x + (area.width - textWidth) / 2, area.y + area.height / 2, page.emptyText);
+    drawEmptyPage(renderer, metrics.area, page);
+    return;
+  }
+  for (size_t index = 0; index < page.count; ++index) {
+    drawShelfRow(renderer, metrics, page.cells[index], static_cast<int>(index), page.selected, page.noCoverText);
+  }
+}
+
+void drawShelfPage(GfxRenderer& renderer, const GridMetrics& metrics, const PageView& page) {
+  // The browse row lives above the grid inside the page area; the cells are laid
+  // out by `metrics`, which the caller already reduced below it.
+  drawChipsRow(renderer, page.pageArea, page.chips);
+  const GridArea& area = metrics.area;
+  drawFooterStrip(renderer, page);
+  if (page.count == 0 || page.cells == nullptr) {
+    drawEmptyPage(renderer, area, page);
     return;
   }
   for (size_t index = 0; index < page.count; ++index) {

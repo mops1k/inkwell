@@ -54,16 +54,65 @@ struct SortEntry {
   shelf::SortKey key;
   StrId label;
 };
+// Sort order offered by the picker, in display order. Titles reuse the strings
+// that already exist ("Размер", "Дата", "Недавние книги"), so only the progress
+// key needed a new word. The list mirrors shelf::sortKeys() order — the picker
+// index is the only thing the overlay has to translate.
 constexpr SortEntry kSortEntries[] = {
-    {shelf::SortKey::Title, StrId::STR_SORT_NAME},
-    {shelf::SortKey::Author, StrId::STR_AUTHOR},
-    {shelf::SortKey::LastOpened, StrId::STR_MENU_RECENT_BOOKS},
+    {shelf::SortKey::Title, StrId::STR_SORT_KEY_NAME},        {shelf::SortKey::Author, StrId::STR_SORT_KEY_AUTHOR},
+    {shelf::SortKey::Series, StrId::STR_SORT_KEY_SERIES},     {shelf::SortKey::LastOpened, StrId::STR_SORT_KEY_RECENT},
+    {shelf::SortKey::Progress, StrId::STR_SORT_KEY_PROGRESS}, {shelf::SortKey::Size, StrId::STR_SORT_KEY_SIZE},
+    {shelf::SortKey::Added, StrId::STR_SORT_KEY_ADDED},       {shelf::SortKey::Year, StrId::STR_SORT_KEY_YEAR},
 };
+static_assert(sizeof(kSortEntries) / sizeof(kSortEntries[0]) == shelf::kSortKeyCount,
+              "sort picker must list every key");
+
+// Display text of one sort key, for the picker row and the shelf footer. Single
+// entry point: a key added to the enum but not here fails the static_assert above.
+const char* sortEntryLabel(shelf::SortKey key) {
+  for (const SortEntry& entry : kSortEntries) {
+    if (entry.key == key) return I18n::getInstance().get(entry.label);
+  }
+  return I18n::getInstance().get(StrId::STR_SORT_NAME);
+}
+
+// "Сортировка: Автор (по возр.)" — one row instead of the three the old picker
+// spent, and it carries the direction so the second step is never a guess.
+std::string sortRowLabel(shelf::SortKey key, bool descending) {
+  std::string label = std::string(tr(STR_SORT_BY)) + ": " + sortEntryLabel(key);
+  label += " (";
+  label += descending ? tr(STR_SORT_DESC_SHORT) : tr(STR_SORT_ASC_SHORT);
+  label += ")";
+  return label;
+}
 
 // Short uppercase badge on the cover, the same cue the Android BookShelf shows.
 // The label itself lives next to the index types so the format filter collects
 // exactly the strings the chip draws.
 const char* formatBadge(shelf::BookFormat format) { return shelf::bookFormatLabel(format); }
+
+// Dimensions the browse overlay offers, in display order. One table: the row
+// order, the index arithmetic in activateOverlayItem and the counts all read it,
+// so adding a dimension cannot shift the others by accident.
+constexpr shelf::FilterField kBrowseFields[] = {shelf::FilterField::Author, shelf::FilterField::Series,
+                                                shelf::FilterField::Genre, shelf::FilterField::Format,
+                                                shelf::FilterField::ReadingStatus};
+constexpr int kBrowseFieldCount = static_cast<int>(sizeof(kBrowseFields) / sizeof(kBrowseFields[0]));
+
+// The localized name of a reading-status value; every other field's value is
+// already display text (an author name, a format label).
+std::string filterValueLabel(shelf::FilterField field, const std::string& value) {
+  if (field != shelf::FilterField::ReadingStatus) return value;
+  switch (shelf::readingStatusFromName(value)) {
+    case shelf::ReadingStatus::Unread:
+      return tr(STR_STATUS_UNREAD);
+    case shelf::ReadingStatus::Reading:
+      return tr(STR_STATUS_READING);
+    case shelf::ReadingStatus::Finished:
+      return tr(STR_STATUS_FINISHED);
+  }
+  return value;
+}
 
 const char* filterLabel(shelf::FilterField field) {
   switch (field) {
@@ -75,6 +124,8 @@ const char* filterLabel(shelf::FilterField field) {
       return tr(STR_GENRE);
     case shelf::FilterField::Format:
       return tr(STR_FORMAT);
+    case shelf::FilterField::ReadingStatus:
+      return tr(STR_READING_STATUS);
     case shelf::FilterField::None:
       break;
   }
@@ -96,6 +147,10 @@ const char* actionLabel(ShelfActivity::BookAction action) {
       return tr(STR_DELETE_CACHE);
   }
 }
+
+// "Автор (5)": the count in parentheses, not "·" — the UI font is a subset and a
+// middle dot is not guaranteed to be in it, while parentheses always are.
+std::string withCount(const std::string& label, int count) { return label + " (" + std::to_string(count) + ")"; }
 
 }  // namespace
 
@@ -129,6 +184,8 @@ void ShelfActivity::onEnter() {
     if (stateStore_.load(state)) {
       query_.filter = state.filter;
       query_.sort = state.sort;
+      query_.descending = state.descending;
+      shelfView_ = shelfui::shelfViewFromName(state.view);
       hiddenPaths_ = std::move(state.hiddenPaths);
     }
     applyQuery();
@@ -207,18 +264,71 @@ void ShelfActivity::loop() {
           requestUpdate();
         } else if (ev.button == MappedInputManager::Button::Confirm) {
           // The overlay is closed before dispatch: a book action or a filter
-          // choice may redraw the grid underneath it.
+          // choice may redraw the grid underneath it. Whatever the action opens
+          // next (a value list, the sort fields) sets the overlay itself, so
+          // nothing may be forced back here — doing that used to swallow the
+          // sort picker the moment the sort row was chosen.
           const Overlay previous = overlay_;
           overlay_ = Overlay::None;
           activateOverlayItem(previous, menuIndex_);
-          if (previous == Overlay::FilterCategories) overlay_ = Overlay::FilterValues;
           requestUpdate();
         }
       }
       if (ev.button == MappedInputManager::Button::Back) {
-        overlay_ = overlay_ == Overlay::FilterValues ? Overlay::FilterCategories : Overlay::None;
-        menuIndex_ = 0;
+        // Back steps out of the pop-up one level at a time: values → categories,
+        // direction → fields → categories. Anything else closes the pop-up.
+        if (overlay_ == Overlay::FilterValues || overlay_ == Overlay::SortFields) {
+          overlay_ = Overlay::FilterCategories;
+          menuIndex_ = 0;
+        } else if (overlay_ == Overlay::SortDirection) {
+          // Stepping back to the fields keeps the staged field under the cursor,
+          // and nothing has been applied yet.
+          overlay_ = Overlay::SortFields;
+          menuIndex_ = 0;
+          for (size_t i = 0; i < shelf::kSortKeyCount; ++i) {
+            if (kSortEntries[i].key == pendingSort_) menuIndex_ = static_cast<int>(i);
+          }
+        } else {
+          overlay_ = Overlay::None;
+          menuIndex_ = 0;
+        }
         requestUpdate();
+      }
+      continue;
+    }
+
+    // The browse row owns the keys while it is focused: Left/Right (and Up) move
+    // inside it, Confirm applies the chip, Down or Back return to the grid. The
+    // row is not an overlay — the grid stays visible and its selection stays put.
+    if (chipsFocused_) {
+      if (ev.type == ButtonEventManager::PressType::Short) {
+        const int chipCount = static_cast<int>(Chip::Count);
+        if (ev.button == MappedInputManager::Button::Confirm) {
+          applyChip(static_cast<Chip>(chipIndex_));
+          return;
+        }
+        if (ev.button == MappedInputManager::Button::Left || ev.button == MappedInputManager::Button::Up) {
+          chipIndex_ = (chipIndex_ + chipCount - 1) % chipCount;
+          chipsMoved_ = true;
+          requestUpdate();
+          continue;
+        }
+        if (ev.button == MappedInputManager::Button::Right) {
+          chipIndex_ = (chipIndex_ + 1) % chipCount;
+          chipsMoved_ = true;
+          requestUpdate();
+          continue;
+        }
+        if (ev.button == MappedInputManager::Button::Down) {
+          if (focusChips(false)) chipsMoved_ = false;
+          continue;
+        }
+      }
+      // Back leaves the row first; the main menu opens on the next press. A single
+      // Back must never mean "menu" while the cursor is off the grid.
+      if (ev.button == MappedInputManager::Button::Back) {
+        if (focusChips(false)) chipsMoved_ = false;
+        continue;
       }
       continue;
     }
@@ -226,6 +336,10 @@ void ShelfActivity::loop() {
     if (ev.type == ButtonEventManager::PressType::Short) {
       switch (ev.button) {
         case MappedInputManager::Button::Confirm:
+          if (emptyAction() != EmptyAction::None) {
+            runEmptyAction();
+            return;
+          }
           openBookCard();
           return;
         case MappedInputManager::Button::Back:
@@ -237,11 +351,17 @@ void ShelfActivity::loop() {
         case MappedInputManager::Button::Right:
           moveSelection(1);
           break;
-        case MappedInputManager::Button::Up:
-          moveSelection(-metrics_.columns);
+        case MappedInputManager::Button::Up: {
+          // Up from the first row steps into the browse row instead of bouncing
+          // off the top of the page — that is how the row is reachable with
+          // buttons. In list mode the first row is a single book, not a column.
+          const int step = shelfView_ == shelfui::ShelfView::List ? 1 : metrics_.columns;
+          if (!view_.empty() && step > 0 && selected_ < step && focusChips(true)) return;
+          moveSelection(-step);
           break;
+        }
         case MappedInputManager::Button::Down:
-          moveSelection(metrics_.columns);
+          moveSelection(shelfView_ == shelfui::ShelfView::List ? 1 : metrics_.columns);
           break;
         default:
           break;
@@ -259,6 +379,13 @@ void ShelfActivity::loop() {
 }
 
 void ShelfActivity::render(RenderLock&&) {
+  // Fast path: the focus moved inside the browse row. Repaint only that strip —
+  // a full page render for one chip would cost the whole panel refresh.
+  if (mode_ == Mode::Grid && overlay_ == Overlay::None && gridFrameShown_ && chipsFocused_ && chipsMoved_ &&
+      chipsWindowRefreshes_ < kMaxChipsWindowRefreshes) {
+    if (syncPartialChipsRefresh()) return;
+  }
+
   // Fast path: the same pop-up is open and the grid frame below it is already on
   // the panel. Moving the focus inside a menu redraws the pop-up in RAM and
   // refreshes only the two rows that changed — the rest of the pop-up keeps its
@@ -295,6 +422,8 @@ void ShelfActivity::render(RenderLock&&) {
   overlayWindowRefreshes_ = 0;
   overlayRectValid_ = false;
   gridFrameShown_ = false;
+  chipsWindowRefreshes_ = 0;
+  chipsMoved_ = false;
   pendingCellFrom_ = -1;
   pendingCellTo_ = -1;
   cellWindowRefreshes_ = 0;
@@ -303,6 +432,7 @@ void ShelfActivity::render(RenderLock&&) {
 
   if (mode_ == Mode::Grid) {
     updateLayout();
+    buildChips();
     const auto& metrics = UITheme::getInstance().getMetrics();
     const Rect contentRect = UITheme::getContentRect(renderer, true, true);
     // The subtitle is the active filter: it must be readable at a glance which
@@ -311,7 +441,7 @@ void ShelfActivity::render(RenderLock&&) {
     if (query_.filter.active()) {
       subtitle = filterLabel(query_.filter.field);
       subtitle += ": ";
-      subtitle += query_.filter.value;
+      subtitle += filterValueLabel(query_.filter.field, query_.filter.value);
     } else if (!view_.empty()) {
       // The filter entry is a long press, which no hint bar shows: without this
       // line nothing on the screen would tell the user the filters exist.
@@ -322,15 +452,31 @@ void ShelfActivity::render(RenderLock&&) {
                    tr(STR_SHELF), subtitle.empty() ? nullptr : subtitle.c_str());
 
     shelfui::PageView page;
-    const int capacity = shelfui::pageCapacity(metrics_);
+    page.pageArea = pageArea_;
+    page.chips.chips = chips_.data();
+    page.chips.count = chips_.size();
+    page.chips.active = chipIndex_;
+    if (chipsFocused_) page.chips.focused = chipIndex_;
+    const int capacity = pageCapacity();
     page.cells = cells_.data();
     page.count = cells_.size();
     page.selected = capacity > 0 ? selected_ % capacity : 0;
     page.page = capacity > 0 ? selected_ / capacity : 0;
     page.pageCount = std::max(1, (static_cast<int>(view_.size()) + capacity - 1) / capacity);
     page.emptyText = view_.empty() && !index_.books.empty() ? tr(STR_NO_FILES_FOUND) : tr(STR_SHELF_EMPTY);
+    page.emptyActionText = emptyActionLabel(emptyAction());
     page.noCoverText = tr(STR_NO_COVER);
-    shelfui::drawShelfPage(renderer, metrics_, page);
+    // "Книг: 12, Сортировать по: Серии (по убыв.)" — the footer answers «сколько
+    // книг в этой выборке» and «в каком порядке», which the page counter alone
+    // cannot. Built here because the renderer links no translations.
+    footerText_ = std::string(tr(STR_BOOKS_COUNT)) + ": " + std::to_string(view_.size()) + ", " +
+                  sortRowLabel(query_.sort, query_.descending);
+    page.footerText = footerText_.c_str();
+    if (shelfView_ == shelfui::ShelfView::List) {
+      shelfui::drawShelfListPage(renderer, rowMetrics_, page);
+    } else {
+      shelfui::drawShelfPage(renderer, metrics_, page);
+    }
     if (overlay_ != Overlay::None) {
       drawOverlayContents();
       overlayRectValid_ = true;
@@ -343,9 +489,12 @@ void ShelfActivity::render(RenderLock&&) {
     // with the mode instead of advertising grid navigation that does nothing.
     // All four front captions are always shown: inside an overlay Left/Right move the
     // highlight exactly like Up/Down, so blanking their labels hid working buttons.
-    const auto labels = overlay_ == Overlay::None
-                            ? mappedInput.mapLabels(tr(STR_MENU), tr(STR_OPEN), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT))
-                            : mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+    const auto labels =
+        overlay_ == Overlay::None
+            ? mappedInput.mapLabels(tr(STR_MENU),
+                                    emptyAction() != EmptyAction::None ? emptyActionLabel(emptyAction()) : tr(STR_OPEN),
+                                    tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT))
+            : mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     // Up/Down keep working inside every overlay (they move the highlighted row), so the
     // side captions stay on screen instead of vanishing: hiding them made the popover
@@ -368,7 +517,68 @@ void ShelfActivity::updateLayout() {
   area.y = contentRect.y + metrics.topPadding + metrics.headerHeight + 4;
   area.width = contentRect.width;
   area.height = contentRect.height - metrics.topPadding - metrics.headerHeight - 4;
-  metrics_ = shelfui::gridMetrics(area);
+  pageArea_ = area;
+  // Cells and rows are laid out in the area left below the browse row, so the row
+  // never overlaps content — it costs one row of height, stated here once.
+  const shelfui::GridArea content = shelfui::gridAreaForCells(area);
+  metrics_ = shelfui::gridMetrics(content);
+  rowMetrics_ = shelfui::listMetrics(content);
+}
+
+int ShelfActivity::pageCapacity() const {
+  return shelfView_ == shelfui::ShelfView::List ? shelfui::listPageCapacity(rowMetrics_)
+                                                : shelfui::pageCapacity(metrics_);
+}
+
+// "Все книги (43) / Авторы (18) / Серии (7) / Жанры (5)": counts are of books,
+// not of values, the same number the filter categories show.
+void ShelfActivity::buildChips() {
+  static constexpr shelf::FilterField kChipFields[] = {shelf::FilterField::None, shelf::FilterField::Author,
+                                                       shelf::FilterField::Series, shelf::FilterField::Genre};
+  static constexpr StrId kChipLabels[] = {StrId::STR_ALL_BOOKS, StrId::STR_BROWSE_AUTHORS, StrId::STR_BROWSE_SERIES,
+                                          StrId::STR_BROWSE_GENRES};
+  chips_.clear();
+  chips_.reserve(static_cast<size_t>(Chip::Count));
+  for (int i = 0; i < static_cast<int>(Chip::Count); ++i) {
+    shelfui::ChipView chip;
+    const int count = kChipFields[i] == shelf::FilterField::None ? static_cast<int>(view_.size())
+                                                                 : query_.countWith(index_, kChipFields[i], &stats_);
+    chip.label = withCount(I18n::getInstance().get(kChipLabels[i]), count);
+    chips_.push_back(std::move(chip));
+  }
+}
+
+void ShelfActivity::applyChip(Chip chip) {
+  static constexpr shelf::FilterField kChipFields[] = {shelf::FilterField::None, shelf::FilterField::Author,
+                                                       shelf::FilterField::Series, shelf::FilterField::Genre};
+  const shelf::FilterField field = kChipFields[static_cast<int>(chip)];
+  if (field == shelf::FilterField::None) {
+    query_.filter.clear();
+    applyQuery();
+    saveState();
+    refreshPage();
+    requestUpdate();
+    return;
+  }
+  // The chip is a way into the same value picker the filter overlay uses: the
+  // row chooses the dimension, the picker chooses the value.
+  openFilterValues(field);
+}
+
+bool ShelfActivity::focusChips(bool focused) {
+  if (chipsFocused_ == focused) return false;
+  chipsFocused_ = focused;
+  if (focused) {
+    // Entering the row puts the cursor on the browse currently in effect.
+    static constexpr shelf::FilterField kChipFields[] = {shelf::FilterField::None, shelf::FilterField::Author,
+                                                         shelf::FilterField::Series, shelf::FilterField::Genre};
+    chipIndex_ = 0;
+    for (int i = 1; i < static_cast<int>(Chip::Count); ++i) {
+      if (query_.filter.field == kChipFields[i]) chipIndex_ = i;
+    }
+  }
+  requestUpdate();
+  return true;
 }
 
 void ShelfActivity::rebuildIndex() {
@@ -404,19 +614,22 @@ void ShelfActivity::applyQuery() {
   // stale if it is only loaded once at activity construction.
   ReadingStatsStore::ScopedLoad statsLoad;
   query_.hiddenPaths = hiddenPaths_;
-  // "Recently opened" needs a timestamp per book; the index itself does not
-  // store one (it would have to be rewritten on every read), so the epochs come
-  // from the reading history at query time.
-  std::vector<uint32_t> epochs;
-  if (query_.sort == shelf::SortKey::LastOpened) {
-    epochs.reserve(index_.books.size());
-    for (const auto& book : index_.books) {
-      const std::string docId = KOReaderDocumentId::calculateFromFilename(book.path);
-      const BookReadingStats* stats = docId.empty() ? nullptr : ReadingStatsStore::getInstance().findBook(docId);
-      epochs.push_back(stats == nullptr ? 0u : static_cast<uint32_t>(stats->lastReadEpoch));
+  // One statistics snapshot per query pass: the time/progress sort keys and the
+  // reading-status filter both need it, and rebuilding it per book would call
+  // into the stats store hundreds of times per repaint.
+  stats_.clear();
+  stats_.reserve(index_.books.size());
+  for (const auto& book : index_.books) {
+    const std::string docId = KOReaderDocumentId::calculateFromFilename(book.path);
+    const BookReadingStats* counters = docId.empty() ? nullptr : ReadingStatsStore::getInstance().findBook(docId);
+    shelf::SortStat stat;
+    if (counters != nullptr) {
+      stat.lastOpenedEpoch = static_cast<uint32_t>(counters->lastReadEpoch);
+      stat.progressPercent = counters->progress;
     }
+    stats_.push_back(stat);
   }
-  query_.apply(index_, view_, epochs.empty() ? nullptr : &epochs);
+  query_.apply(index_, view_, &stats_);
   if (view_.empty()) {
     selected_ = 0;
   } else {
@@ -435,7 +648,7 @@ void ShelfActivity::refreshPage() {
   // have failed its load if the activity was created before the card was ready,
   // and progressFor() then silently answered "never opened" forever.
   ReadingStatsStore::ScopedLoad statsLoad;
-  const int capacity = shelfui::pageCapacity(metrics_);
+  const int capacity = pageCapacity();
   const int pageIndex = capacity > 0 ? selected_ / capacity : 0;
   const int start = pageIndex * capacity;
   const int end = std::min(static_cast<int>(view_.size()), start + capacity);
@@ -481,7 +694,7 @@ void ShelfActivity::moveSelection(int delta) {
   // A move inside the current page only changes the highlight: rebuilding the
   // page here reloaded the reading stats from SD and reset the queued covers,
   // which is exactly the delay the grid had and the pop-ups did not.
-  const int capacity = shelfui::pageCapacity(metrics_);
+  const int capacity = pageCapacity();
   const int pageBefore = capacity > 0 ? selected_ / capacity : 0;
   const int pageLocalBefore = capacity > 0 ? selected_ % capacity : 0;
   selected_ = next;
@@ -525,6 +738,9 @@ void ShelfActivity::openBookCard() {
   seed.series = book->meta.series;
   seed.seriesIndex = book->meta.seriesIndex;
   seed.genre = book->meta.genre;
+  seed.year = book->meta.year;
+  seed.publisher = book->meta.publisher;
+  seed.pages = book->meta.pages;
   // Card-sized artwork only if it is already on the card: the card paints first
   // and generating a cover there would defeat its own instant open.
   seed.coverPath = covers_.existingCover(book->path, shelf::ShelfCoverSize::Card);
@@ -543,6 +759,58 @@ void ShelfActivity::openBookCard() {
                          [this](const ActivityResult&) { requestUpdate(); });
 }
 
+// An empty grid is not one state but three, and each has its own way out:
+// nothing indexed yet (rescan), a filter that matches nothing (drop it), or a
+// library whose every book is hidden (show them). Offering "rescan" for all
+// three — the old text-only behaviour — was what made a filter look like a
+// lost library.
+ShelfActivity::EmptyAction ShelfActivity::emptyAction() const {
+  if (!view_.empty()) return EmptyAction::None;
+  if (index_.books.empty()) return EmptyAction::Rescan;
+  if (query_.filter.active()) return EmptyAction::ClearFilter;
+  if (!hiddenPaths_.empty()) return EmptyAction::ShowHidden;
+  return EmptyAction::Rescan;
+}
+
+const char* ShelfActivity::emptyActionLabel(EmptyAction action) const {
+  switch (action) {
+    case EmptyAction::Rescan:
+      return tr(STR_SHELF_REFRESH);
+    case EmptyAction::ClearFilter:
+      return tr(STR_CLEAR_FILTER);
+    case EmptyAction::ShowHidden:
+      return tr(STR_HIDDEN_BOOKS);
+    case EmptyAction::None:
+      break;
+  }
+  return "";
+}
+
+void ShelfActivity::runEmptyAction() {
+  switch (emptyAction()) {
+    case EmptyAction::Rescan:
+      // The same explicit full rebuild the menu offers: "refresh" is what the
+      // user presses after adding books, and here it is also the way to make an
+      // empty card produce a library.
+      mode_ = Mode::Scanning;
+      requestUpdate(true);
+      return;
+    case EmptyAction::ClearFilter:
+      query_.filter.clear();
+      applyQuery();
+      saveState();
+      refreshPage();
+      requestUpdate();
+      return;
+    case EmptyAction::ShowHidden:
+      openHiddenBooks();
+      requestUpdate();
+      return;
+    case EmptyAction::None:
+      return;
+  }
+}
+
 void ShelfActivity::openMainMenu() {
   menuActions_.clear();
   menuLabels_.clear();
@@ -557,6 +825,9 @@ void ShelfActivity::openMainMenu() {
   add(MenuAction::Transfer, StrId::STR_FILE_TRANSFER);
   add(MenuAction::Settings, StrId::STR_SETTINGS_TITLE);
   add(MenuAction::Hidden, StrId::STR_HIDDEN_BOOKS);
+  // The list is the fast way to scan the library, so the switch sits next to the
+  // hidden books instead of inside a settings screen.
+  add(MenuAction::View, shelfView_ == shelfui::ShelfView::Grid ? StrId::STR_VIEW_LIST : StrId::STR_VIEW_GRID);
   add(MenuAction::Refresh, StrId::STR_SHELF_REFRESH);
   overlay_ = Overlay::Menu;
   menuIndex_ = 0;
@@ -582,6 +853,14 @@ void ShelfActivity::runMenuAction(MenuAction action) {
       return;
     case MenuAction::Hidden:
       openHiddenBooks();
+      return;
+    case MenuAction::View:
+      // One press flips the presentation; the page is rebuilt because the row
+      // height and the page capacity change with it.
+      shelfView_ = shelfView_ == shelfui::ShelfView::Grid ? shelfui::ShelfView::List : shelfui::ShelfView::Grid;
+      saveState();
+      refreshPage();
+      requestUpdate();
       return;
     case MenuAction::Refresh:
       // Explicit only, and deliberately a FULL rebuild: "refresh" is what the
@@ -613,7 +892,7 @@ void ShelfActivity::runBookAction(BookAction action) {
       // grid for a second (or minutes in the emulator).
       ShelfCoverService::refreshCovers(path);
       refreshPage();
-      const int cell = selected_ % std::max(1, shelfui::pageCapacity(metrics_));
+      const int cell = selected_ % std::max(1, pageCapacity());
       (void)coverWorker_.request(cell, path, shelf::ShelfCoverSize::Cell);
       (void)coverWorker_.request(cell, path, shelf::ShelfCoverSize::Card);
       requestUpdate();
@@ -642,14 +921,64 @@ void ShelfActivity::runBookAction(BookAction action) {
 
 void ShelfActivity::drawMenu() { drawOverlayContents(); }
 
+bool ShelfActivity::syncPartialChipsRefresh() {
+  if (!chipsFocused_ || chips_.empty()) return false;
+  const Rect row = shelfui::chipsRowBounds(pageArea_);
+  if (row.width <= 0 || row.height <= 0) return false;
+  renderer.syncWriteBufferFromDisplayed();
+  renderer.fillRect(row.x, row.y, row.width, row.height, false);
+  shelfui::ChipsRow view;
+  view.chips = chips_.data();
+  view.count = chips_.size();
+  view.active = chipIndex_;
+  view.focused = chipIndex_;
+  shelfui::drawChipsRow(renderer, pageArea_, view);
+  ++chipsWindowRefreshes_;
+  chipsMoved_ = false;
+  renderer.displayWindow(row.x, row.y, row.width, row.height);
+  return true;
+}
+
 bool ShelfActivity::syncPartialFocusRefresh() {
-  const int capacity = shelfui::pageCapacity(metrics_);
+  const int capacity = pageCapacity();
   if (capacity <= 0 || !gridFrameShown_) return false;
   const int count = static_cast<int>(cells_.size());
   if (pendingCellFrom_ >= count || pendingCellTo_ >= count) return false;
 
   renderer.syncWriteBufferFromDisplayed();
   const int selectedLocal = selected_ % capacity;
+  if (shelfView_ == shelfui::ShelfView::List) {
+    // One book per row: a focus move touches two whole rows and fresh artwork one
+    // row, repainted with the row renderer. Same window-update discipline as the
+    // grid (a full page refresh here would cost the whole panel for one line).
+    int left = INT_MAX;
+    int top = INT_MAX;
+    int right = 0;
+    int bottom = 0;
+    std::vector<int> rows = pendingCoverRepaints_;
+    for (const int index : {pendingCellFrom_, pendingCellTo_, lastSelectedLocal_}) {
+      if (index < 0 || index >= count) continue;
+      if (std::find(rows.begin(), rows.end(), index) == rows.end()) rows.push_back(index);
+    }
+    for (const int index : rows) {
+      if (index < 0 || index >= count) continue;
+      const Rect row = shelfui::listRowBounds(rowMetrics_, index);
+      renderer.fillRect(row.x, row.y, row.width, row.height, false);
+      shelfui::drawShelfRow(renderer, rowMetrics_, cells_[index], index, selectedLocal, tr(STR_NO_COVER));
+      left = std::min(left, row.x);
+      top = std::min(top, row.y);
+      right = std::max(right, row.x + row.width);
+      bottom = std::max(bottom, row.y + row.height);
+    }
+    lastSelectedLocal_ = selectedLocal;
+    if (right <= left || bottom <= top) return false;
+    ++cellWindowRefreshes_;
+    renderer.displayWindow(left, top, right - left, bottom - top);
+    pendingCellFrom_ = -1;
+    pendingCellTo_ = -1;
+    pendingCoverRepaints_.clear();
+    return true;
+  }
   int left = INT_MAX;
   int top = INT_MAX;
   int right = 0;
@@ -727,7 +1056,7 @@ shelfui::OverlayGeometry ShelfActivity::drawOverlayContents() {
 
 const std::vector<std::string>& ShelfActivity::overlayItems() const {
   static std::vector<std::string> items;
-  if (overlay_ == Overlay::FilterValues) return filterValues_;
+  if (overlay_ == Overlay::FilterValues) return filterValueLabels_;
   if (overlay_ == Overlay::Menu) return menuLabels_;
   if (overlay_ == Overlay::HiddenBooks) return hiddenLabels_;
 
@@ -738,23 +1067,34 @@ const std::vector<std::string>& ShelfActivity::overlayItems() const {
     }
     return items;
   }
+  if (overlay_ == Overlay::SortFields) {
+    for (const SortEntry& entry : kSortEntries) {
+      std::string label = sortEntryLabel(entry.key);
+      if (pendingSort_ == entry.key) label += " *";
+      items.push_back(std::move(label));
+    }
+    return items;
+  }
+  if (overlay_ == Overlay::SortDirection) {
+    // Ascending first, then descending: the two labels are the existing sort
+    // strings, so the direction step reads the same as the rest of the UI.
+    items.emplace_back(tr(STR_SORT_ASC));
+    items.emplace_back(tr(STR_SORT_DESC));
+    items[pendingDescending_ ? 1 : 0] += " *";
+    return items;
+  }
   if (overlay_ != Overlay::FilterCategories) return items;
 
   items.clear();
   items.emplace_back(tr(STR_ALL_BOOKS));
-  for (const shelf::FilterField field : {shelf::FilterField::Author, shelf::FilterField::Series,
-                                         shelf::FilterField::Genre, shelf::FilterField::Format}) {
-    std::string label = filterLabel(field);
-    if (query_.filter.field == field) {
-      label += " *";
-    }
+  for (const shelf::FilterField field : kBrowseFields) {
+    // The number is how many books carry a value for this dimension, not how
+    // many distinct values exist: the row answers "is there anything to browse".
+    std::string label = withCount(filterLabel(field), query_.countWith(index_, field, &stats_));
+    if (query_.filter.field == field) label += " *";
     items.push_back(std::move(label));
   }
-  for (const SortEntry& entry : kSortEntries) {
-    std::string label = std::string(tr(STR_SORT_BY)) + ": " + I18n::getInstance().get(entry.label);
-    if (query_.sort == entry.key) label += " *";
-    items.push_back(std::move(label));
-  }
+  items.push_back(sortRowLabel(query_.sort, query_.descending));
   return items;
 }
 
@@ -767,12 +1107,20 @@ void ShelfActivity::openFilters() {
 void ShelfActivity::openFilterValues(shelf::FilterField field) {
   pendingField_ = field;
   filterValues_.clear();
+  filterValueLabels_.clear();
   // "All books" is always the first value: the only way back to the whole
   // library without remembering which value was active before.
-  filterValues_.emplace_back(tr(STR_ALL_BOOKS));
-  std::vector<std::string> values;
-  query_.collectValues(index_, field, values);
-  filterValues_.insert(filterValues_.end(), values.begin(), values.end());
+  filterValues_.emplace_back();
+  filterValueLabels_.emplace_back(tr(STR_ALL_BOOKS));
+  // Values carry how many books sit behind them: the same number the Android
+  // library shows next to a category, and the reason a picker of authors is
+  // worth opening at all.
+  std::vector<shelf::FilterValueCount> counts;
+  query_.collectValueCounts(index_, field, counts, 200, &stats_);
+  for (auto& entry : counts) {
+    filterValues_.push_back(std::move(entry.value));
+    filterValueLabels_.push_back(withCount(filterValueLabel(field, filterValues_.back()), entry.count));
+  }
   overlay_ = Overlay::FilterValues;
   menuIndex_ = 0;
   requestUpdate();
@@ -817,19 +1165,42 @@ void ShelfActivity::activateOverlayItem(Overlay source, int index) {
       runBookAction(static_cast<BookAction>(index));
       return;
     case Overlay::FilterCategories: {
-      // 0 = all books, 1..4 = author/series/genre/format pickers, 5.. = sort.
+      // 0 = all books, 1..kBrowseFieldCount = the dimensions, then sort.
       if (index == 0) {
         query_.filter.clear();
-      } else if (index >= 1 && index <= 4) {
-        static constexpr shelf::FilterField kFields[] = {shelf::FilterField::Author, shelf::FilterField::Series,
-                                                         shelf::FilterField::Genre, shelf::FilterField::Format};
-        openFilterValues(kFields[index - 1]);
+      } else if (index >= 1 && index <= kBrowseFieldCount) {
+        openFilterValues(kBrowseFields[index - 1]);
         return;
       } else {
-        const size_t sortIndex = static_cast<size_t>(index) - 5;
-        if (sortIndex >= sizeof(kSortEntries) / sizeof(kSortEntries[0])) break;
-        query_.sort = kSortEntries[sortIndex].key;
+        // Sort is two steps (field, then direction): stepping into the field list
+        // must not apply anything yet, or Cancel would still change the grid.
+        pendingSort_ = query_.sort;
+        pendingDescending_ = query_.descending;
+        menuIndex_ = 0;
+        for (size_t i = 0; i < shelf::kSortKeyCount; ++i) {
+          if (kSortEntries[i].key == query_.sort) menuIndex_ = static_cast<int>(i);
+        }
+        overlay_ = Overlay::SortFields;
+        requestUpdate();
+        return;
       }
+      break;
+    }
+    case Overlay::SortFields: {
+      if (index < 0 || index >= static_cast<int>(shelf::kSortKeyCount)) return;
+      // Stage the key, do not apply it: the direction step starts from the key's
+      // natural end ("недавние" = newest first) and the two steps are committed
+      // together, so backing out here leaves the library exactly as it was.
+      pendingSort_ = kSortEntries[index].key;
+      pendingDescending_ = shelf::naturalDescending(pendingSort_);
+      overlay_ = Overlay::SortDirection;
+      menuIndex_ = pendingDescending_ ? 1 : 0;
+      requestUpdate(true);
+      return;
+    }
+    case Overlay::SortDirection: {
+      query_.sort = pendingSort_;
+      query_.descending = index == 1;
       break;
     }
     case Overlay::FilterValues: {
@@ -864,6 +1235,8 @@ void ShelfActivity::saveState() {
   shelf::LibraryState state;
   state.filter = query_.filter;
   state.sort = query_.sort;
+  state.descending = query_.descending;
+  state.view = shelfui::shelfViewName(shelfView_);
   state.hiddenPaths = hiddenPaths_;
   stateStore_.save(state);
 }

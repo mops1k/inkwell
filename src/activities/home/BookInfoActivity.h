@@ -19,6 +19,11 @@ struct BookInfoSeed {
   std::string series;
   std::string seriesIndex;
   std::string genre;
+  // Publication data the library index already knows, so the first paint has it
+  // too and the card does not flash empty rows while the file is parsed.
+  std::string year;
+  std::string publisher;
+  std::string pages;
   std::string coverPath;
   int progressPercent = -1;
   BookInfoSeed() = default;
@@ -37,6 +42,12 @@ class BookInfoActivity final : public Activity {
   std::string series;
   std::string seriesIndex;
   std::string genre;  // first FB2 <genre> / EPUB dc:subject, may stay empty
+  // Publication data as the container declares it: FB2 <publish-info>, EPUB
+  // dc:date/dc:publisher plus a page count only when the book states one. Each
+  // row is drawn only when its string is not empty.
+  std::string year;
+  std::string publisher;
+  std::string pages;
   std::string description;
   std::string coverBmpPath;
   std::string loadError;

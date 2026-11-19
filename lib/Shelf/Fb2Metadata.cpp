@@ -3,6 +3,8 @@
 #include <HalStorage.h>
 #include <Logging.h>
 
+#include <cctype>
+
 #include "../Fb2/Fb2.h"
 #include "../Fb2/native/Fb2Parser.h"
 #include "../Fb2/native/Fb2ZipOpener.h"
@@ -12,8 +14,27 @@ namespace shelf {
 
 namespace {
 
-std::string parentDirectory(const std::string& path) {
-  const size_t slash = path.find_last_of('/');
+std::string trimmed(const std::string& text) {
+  const size_t first = text.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) return {};
+  const size_t last = text.find_last_not_of(" \t\r\n");
+  return text.substr(first, last - first + 1);
+}
+
+// The publication year as four digits. Files write it as "1965", "1965-03-01"
+// or with surrounding whitespace, so the year is the first four digits and
+// nothing more: a value that does not start with four digits yields an empty
+// year rather than a half-parsed string on the card.
+std::string leadingYear(const std::string& text) {
+  const std::string value = trimmed(text);
+  if (value.size() < 4) return {};
+  for (size_t i = 0; i < 4; ++i) {
+    if (!std::isdigit(static_cast<unsigned char>(value[i]))) return {};
+  }
+  return value.substr(0, 4);
+}
+
+std::string parentDirectory(const std::string& path) {  const size_t slash = path.find_last_of('/');
   if (slash == std::string::npos) return ".";
   if (slash == 0) return "/";
   return path.substr(0, slash);
@@ -54,6 +75,11 @@ bool scanFb2File(const std::string& path, BookMeta& out) {
   out.genre = first == std::string::npos ? std::string() : genre.substr(first, last - first + 1);
   out.series = result.metadata.sequenceName;
   out.description = result.metadata.annotationText;
+  // <publish-info><year> is the publication year; <title-info><date> is the
+  // writing date and only a fallback — the card shows the publication year.
+  out.year = trimmed(result.metadata.year);
+  if (out.year.empty()) out.year = leadingYear(result.metadata.date);
+  out.publisher = trimmed(result.metadata.publisher);
   if (result.metadata.sequenceNumber != 0) out.seriesIndex = std::to_string(result.metadata.sequenceNumber);
   return !out.title.empty();
 }

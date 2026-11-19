@@ -27,6 +27,9 @@ bool readBookMetadata(const std::string& path, BookFormat format, BookMeta& out)
       out.language = epub.getLanguage();
       out.genre = epub.getGenre();
       out.description = epub.getDescription();
+      out.year = epub.getYear();
+      out.publisher = epub.getPublisher();
+      out.pages = epub.getPages();
       return !out.title.empty();
     }
     case BookFormat::Fb2:

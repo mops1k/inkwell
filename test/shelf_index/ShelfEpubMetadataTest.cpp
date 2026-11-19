@@ -21,6 +21,17 @@ TEST(ShelfEpub, ReadsOpfMetadata) {
   EXPECT_EQ("en", meta.language);
 }
 
+// dc:date/dc:publisher/dcterms:extent reach the shelf as year, publisher and
+// pages: "320 pages" is a page count, while a size in dcterms:extent must never
+// become one (see declaredPages in Epub.cpp).
+TEST(ShelfEpub, ReadsPublicationMetadata) {
+  shelf::BookMeta meta;
+  ASSERT_TRUE(shelf::readBookMetadata(shelfFixture("publication.epub"), shelf::BookFormat::Epub, meta));
+  EXPECT_EQ("1984", meta.year);
+  EXPECT_EQ("Тестовое издательство", meta.publisher);
+  EXPECT_EQ("320", meta.pages);
+}
+
 TEST(ShelfEpub, BrokenArchiveFails) {
   shelf::BookMeta meta;
   EXPECT_FALSE(shelf::readBookMetadata(shelfFixture("broken.epub"), shelf::BookFormat::Epub, meta));
