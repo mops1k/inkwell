@@ -35,8 +35,23 @@ constexpr int otaHttpMaxAttempts = 3;
 constexpr unsigned long otaInitialRetryDelayMs = 1000;
 constexpr size_t releaseMetadataMaxBytes = 128 * 1024;
 constexpr size_t sha256HexLength = 64;
+// A wolfSSL client handshake on this board needs a contiguous block in the tens
+// of kilobytes. Checking it up front turns an out-of-memory abort() inside the
+// TLS stack (an exception-free build, so it reboots) into a reported error.
+constexpr size_t tlsMinLargestBlockBytes = 40 * 1024;
 
 const char* getReleaseApiUrl() { return SETTINGS.includeBetaUpdates ? releaseListUrl : latestReleaseUrl; }
+
+bool haveHeapForTls(const char* operation) {
+  const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+  const size_t freeBytes = esp_get_free_heap_size();
+  LOG_DBG("OTA", "%s: free heap %zu B, largest block %zu B", operation, freeBytes, largest);
+  if (largest < tlsMinLargestBlockBytes) {
+    LOG_ERR("OTA", "%s skipped: largest free block %zu B < %zu B", operation, largest, tlsMinLargestBlockBytes);
+    return false;
+  }
+  return true;
+}
 
 // The manifest names assets by file name only; the release metadata carries the
 // full download URL. Comparing the URL's last path segment keeps both sides
@@ -116,6 +131,9 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   // avoid holding full GitHub release JSON in memory.
   // Adapted from crosspoint-reader/crosspoint-reader (MIT),
   // PR #1810 by znelson and contributors.
+  if (!haveHeapForTls("Release metadata")) {
+    return LOW_MEMORY;
+  }
   LOG_DBG("OTA", "Checking for %s update at %s", SETTINGS.includeBetaUpdates ? "beta" : "stable", releaseApiUrl);
   for (int attempt = 1; attempt <= otaHttpMaxAttempts; ++attempt) {
     ReleaseJsonParser releaseParser;
@@ -128,10 +146,11 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
             return false;
           }
           releaseParser.feed(reinterpret_cast<const char*>(data), len);
-          // For OTA metadata we only need tag_name and the firmware asset
-          // fields (inkwell-<version>.bin, or upstream's firmware.bin).
-          // Stop early once both are found to avoid fragile tail reads.
-          if (releaseParser.foundTag() && releaseParser.foundFirmware()) {
+          // For OTA metadata we need tag_name, the firmware asset and whatever
+          // verifies it — the asset digest, or the manifest asset to fetch next.
+          // Stop early once those are known to avoid fragile tail reads.
+          if (releaseParser.foundTag() && releaseParser.foundFirmware() &&
+              (releaseParser.foundDigest() || releaseParser.foundManifest())) {
             return false;
           }
           return true;
@@ -162,47 +181,58 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
       return NO_UPDATE;
     }
 
-    if (!releaseParser.foundManifest()) {
-      LOG_ERR("OTA", "No firmware-manifest.json asset in release metadata");
-      return MANIFEST_MISSING;
-    }
-
     latestVersion = releaseParser.getTagName();
     otaUrl = releaseParser.getFirmwareUrl();
     otaSize = releaseParser.getFirmwareSize();
     totalSize = otaSize;
 
-    // The manifest pins the SHA-256 of the image built for this board; without
-    // a usable entry the release is not installed (fail closed, no downgrade of
-    // verification to TLS alone).
-    const char* board = gpio.deviceIsX3() ? "X3" : "X4";
-    const char* supportedBoards[] = {board};
-    FirmwareManifestParser manifestParser(supportedBoards, 1);
-    const bool manifestOk = HttpDownloader::fetchUrl(
-        releaseParser.getManifestUrl(),
-        [&manifestParser](const uint8_t* data, size_t len) {
-          manifestParser.feed(reinterpret_cast<const char*>(data), len);
-          return true;
-        },
-        /*verifyTls=*/true);
-    if (!manifestOk) {
-      LOG_ERR("OTA", "firmware-manifest.json download failed");
-      return HTTP_ERROR;
-    }
-    if (!manifestParser.hasSelected()) {
-      LOG_ERR("OTA", "firmware-manifest.json has no application for %s", board);
-      return MANIFEST_INVALID;
-    }
-    expectedSha256 = manifestParser.selectedSha256();
-    expectedFileName = manifestParser.selectedFile();
-    if (!assetNameMatches(otaUrl.c_str(), expectedFileName.c_str())) {
-      LOG_ERR("OTA", "manifest names %s but the release asset is %s", expectedFileName.c_str(),
-              pathBasename(otaUrl.c_str()));
-      return MANIFEST_INVALID;
-    }
-    if (otaSize != 0 && manifestParser.selectedBytes() != 0 && otaSize != manifestParser.selectedBytes()) {
-      LOG_ERR("OTA", "manifest size %zu does not match asset size %zu", manifestParser.selectedBytes(), otaSize);
-      return MANIFEST_INVALID;
+    // Verification source, in order of preference:
+    //   1. the asset digest GitHub reports next to the asset in the same release
+    //      metadata — no extra HTTPS request, which is the cheapest option on a
+    //      board that already runs tight during TLS;
+    //   2. firmware-manifest.json, which additionally names the asset per board.
+    // Without either, the release is not installed (fail closed).
+    if (releaseParser.foundDigest()) {
+      expectedSha256 = releaseParser.getFirmwareDigest();
+      expectedFileName.clear();
+      LOG_DBG("OTA", "Verifying with the release asset digest (%s)", expectedSha256.c_str());
+    } else {
+      if (!releaseParser.foundManifest()) {
+        LOG_ERR("OTA", "Release has neither an asset digest nor firmware-manifest.json");
+        return MANIFEST_MISSING;
+      }
+      if (!haveHeapForTls("firmware-manifest.json")) {
+        return LOW_MEMORY;
+      }
+      const char* board = gpio.deviceIsX3() ? "X3" : "X4";
+      const char* supportedBoards[] = {board};
+      FirmwareManifestParser manifestParser(supportedBoards, 1);
+      const bool manifestOk = HttpDownloader::fetchUrl(
+          releaseParser.getManifestUrl(),
+          [&manifestParser](const uint8_t* data, size_t len) {
+            manifestParser.feed(reinterpret_cast<const char*>(data), len);
+            return true;
+          },
+          /*verifyTls=*/true);
+      if (!manifestOk) {
+        LOG_ERR("OTA", "firmware-manifest.json download failed");
+        return HTTP_ERROR;
+      }
+      if (!manifestParser.hasSelected()) {
+        LOG_ERR("OTA", "firmware-manifest.json has no application for %s", board);
+        return MANIFEST_INVALID;
+      }
+      expectedSha256 = manifestParser.selectedSha256();
+      expectedFileName = manifestParser.selectedFile();
+      if (!assetNameMatches(otaUrl.c_str(), expectedFileName.c_str())) {
+        LOG_ERR("OTA", "manifest names %s but the release asset is %s", expectedFileName.c_str(),
+                pathBasename(otaUrl.c_str()));
+        return MANIFEST_INVALID;
+      }
+      if (otaSize != 0 && manifestParser.selectedBytes() != 0 && otaSize != manifestParser.selectedBytes()) {
+        LOG_ERR("OTA", "manifest size %zu does not match asset size %zu", manifestParser.selectedBytes(), otaSize);
+        return MANIFEST_INVALID;
+      }
     }
 
     updateAvailable = true;
@@ -514,6 +544,14 @@ OtaUpdater::OtaUpdaterError OtaUpdater::performInstallUpdateStep() {
   }
   char actualSha256[sha256HexLength + 1];
   firmware_manifest::formatSha256Hex(digest, sizeof(digest), actualSha256, sizeof(actualSha256));
+  // The digest proves what was written; the length check catches a truncated
+  // transfer that still hashed consistently (an upstream proxy closing early).
+  if (totalSize != 0 && processedSize != totalSize) {
+    LOG_ERR("OTA", "image is %zu B, release asset is %zu B", processedSize, totalSize);
+    cleanupUpdate();
+    installResult = VALIDATE_FAILED;
+    return installResult;
+  }
   if (!firmware_manifest::sha256HexEquals(actualSha256, expectedSha256.c_str())) {
     char details[96];
     snprintf(details, sizeof(details), "SHA256 %s != %s", actualSha256, expectedSha256.c_str());

@@ -168,6 +168,9 @@ void OtaUpdateActivity::render(RenderLock&&) {
       case OtaUpdater::OOM_ERROR:
         reason = "Out of memory";
         break;
+      case OtaUpdater::LOW_MEMORY:
+        reason = "Not enough free memory for the update check";
+        break;
       case OtaUpdater::METADATA_TOO_LARGE_ERROR:
         reason = tr(STR_RELEASE_METADATA_TOO_LARGE);
         break;

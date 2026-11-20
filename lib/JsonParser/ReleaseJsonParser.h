@@ -20,11 +20,16 @@ class ReleaseJsonParser {
   bool foundTag() const;
   bool foundFirmware() const;
   bool foundManifest() const;
+  bool foundDigest() const;
   const char* getTagName() const;
   const char* getFirmwareUrl() const;
   size_t getFirmwareSize() const;
   const char* getManifestUrl() const;
   size_t getManifestSize() const;
+  // SHA-256 of the selected firmware asset as published by GitHub's release
+  // API (`digest: "sha256:<hex>"`), normalised to 64 hex characters. Empty when
+  // the release does not carry digests.
+  const char* getFirmwareDigest() const;
 
  private:
   bool inReleaseObject() const;
@@ -42,6 +47,7 @@ class ReleaseJsonParser {
     ASSET_NAME,
     ASSET_URL,
     ASSET_SIZE,
+    ASSET_DIGEST,
   };
 
   static void sOnKey(void* ctx, const char* key, size_t len);
@@ -79,8 +85,15 @@ class ReleaseJsonParser {
   size_t manifestSize;
   bool manifestFound;
 
+  // GitHub's release API also reports `digest` per asset. When present it lets
+  // the installer verify the download without a second HTTPS request, which is
+  // a meaningful heap saving on this board.
+  char firmwareDigest[65];
+  bool digestFound;
+
   char currentAssetName[32];
   char currentAssetUrl[512];
   bool topLevelArray;
   size_t currentAssetSize;
+  char currentAssetDigest[80];
 };

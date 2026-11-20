@@ -31,6 +31,7 @@ class OtaUpdater {
     UPDATE_OLDER_ERROR,
     INTERNAL_UPDATE_ERROR,
     OOM_ERROR,
+    LOW_MEMORY,
     METADATA_TOO_LARGE_ERROR,
     MANIFEST_MISSING,
     MANIFEST_INVALID,
@@ -70,9 +71,9 @@ class OtaUpdater {
  private:
   static int forceSetOtaBootPartition();
   InstallProgressFn installProgressCb;
-  // Expected image identity, taken from firmware-manifest.json during the
-  // update check: the asset is only flashed when the streamed SHA-256 matches
-  // and the manifest names the asset that is actually downloaded.
+  // Expected image identity: either the asset digest reported by GitHub's
+  // release API, or the SHA-256 from firmware-manifest.json when the release
+  // carries no digest. The asset is only flashed when the streamed hash matches.
   std::string expectedSha256;
   std::string expectedFileName;
   // Opaque esp_ota handle for the streaming install (void* avoids including

@@ -26,6 +26,29 @@ bool isInkwellAsset(const char* name) {
   return strncmp(name, inkwellAssetPrefix, sizeof(inkwellAssetPrefix) - 1) == 0 && hasSuffix(name, binAssetSuffix);
 }
 
+bool isHex64(const char* text) {
+  for (size_t i = 0; i < 64; ++i) {
+    const char c = text[i];
+    const bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    if (!hex) return false;
+  }
+  return text[64] == '\0';
+}
+
+// GitHub reports `"digest": "sha256:<hex>"`. Older or mirrored releases may
+// omit it or provide a bare hash; anything that is not a 64-character hex
+// SHA-256 is dropped so the installer falls back to the manifest.
+void normalizeDigest(const char* raw, char out[65]) {
+  out[0] = '\0';
+  if (!raw) return;
+  constexpr char prefix[] = "sha256:";
+  const char* hex = raw;
+  if (strncmp(raw, prefix, sizeof(prefix) - 1) == 0) hex = raw + sizeof(prefix) - 1;
+  if (strlen(hex) != 64 || !isHex64(hex)) return;
+  memcpy(out, hex, 64);
+  out[64] = '\0';
+}
+
 }  // namespace
 
 ReleaseJsonParser::ReleaseJsonParser()
@@ -49,6 +72,9 @@ void ReleaseJsonParser::reset() {
   manifestUrl[0] = '\0';
   manifestSize = 0;
   manifestFound = false;
+  firmwareDigest[0] = '\0';
+  digestFound = false;
+  currentAssetDigest[0] = '\0';
   topLevelArray = false;
   currentAssetName[0] = '\0';
   currentAssetUrl[0] = '\0';
@@ -67,11 +93,13 @@ void ReleaseJsonParser::feed(const char* data, size_t len) { parser.feed(data, l
 bool ReleaseJsonParser::foundTag() const { return tagFound; }
 bool ReleaseJsonParser::foundFirmware() const { return firmwareFound; }
 bool ReleaseJsonParser::foundManifest() const { return manifestFound; }
+bool ReleaseJsonParser::foundDigest() const { return digestFound; }
 const char* ReleaseJsonParser::getTagName() const { return tagName; }
 const char* ReleaseJsonParser::getFirmwareUrl() const { return firmwareUrl; }
 size_t ReleaseJsonParser::getFirmwareSize() const { return firmwareSize; }
 const char* ReleaseJsonParser::getManifestUrl() const { return manifestUrl; }
 size_t ReleaseJsonParser::getManifestSize() const { return manifestSize; }
+const char* ReleaseJsonParser::getFirmwareDigest() const { return firmwareDigest; }
 
 void ReleaseJsonParser::commitAsset() {
   if (strcmp(currentAssetName, "firmware-manifest.json") == 0) {
@@ -95,9 +123,12 @@ void ReleaseJsonParser::commitAsset() {
     firmwareSize = currentAssetSize;
     firmwareFound = true;
     firmwarePreferred = inkwellAsset;
+    normalizeDigest(currentAssetDigest, firmwareDigest);
+    digestFound = firmwareDigest[0] != '\0';
   }
   currentAssetName[0] = '\0';
   currentAssetUrl[0] = '\0';
+  currentAssetDigest[0] = '\0';
   currentAssetSize = 0;
 }
 
@@ -123,6 +154,8 @@ void ReleaseJsonParser::sOnKey(void* ctx, const char* key, size_t len) {
           self->lastKey = LastKey::ASSET_URL;
         else if (len == 4 && memcmp(key, "size", 4) == 0)
           self->lastKey = LastKey::ASSET_SIZE;
+        else if (len == 6 && memcmp(key, "digest", 6) == 0)
+          self->lastKey = LastKey::ASSET_DIGEST;
         else
           self->lastKey = LastKey::NONE;
       }
@@ -149,6 +182,10 @@ void ReleaseJsonParser::sOnString(void* ctx, const char* value, size_t len) {
     case LastKey::ASSET_URL:
       if (self->position == Position::IN_ASSET_OBJECT && self->assetDepth == 1)
         safeCopy(self->currentAssetUrl, sizeof(self->currentAssetUrl), value, len);
+      break;
+    case LastKey::ASSET_DIGEST:
+      if (self->position == Position::IN_ASSET_OBJECT && self->assetDepth == 1)
+        safeCopy(self->currentAssetDigest, sizeof(self->currentAssetDigest), value, len);
       break;
     default:
       break;

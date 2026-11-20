@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstring>
 #include <memory>
 #include <string>
 
@@ -100,6 +101,55 @@ constexpr char releaseList[] = R"([{
   ]
 }])";
 
+constexpr char inkwellReleaseWithDigest[] = R"({
+  "tag_name": "1.1.0",
+  "assets": [
+    {
+      "name": "firmware-manifest.json",
+      "browser_download_url": "https://example.invalid/firmware-manifest.json",
+      "size": 1241,
+      "digest": "sha256:46220917c59a88fa1842a97119c5ff25c3d781fa42c97830750213fcb312f9a4"
+    },
+    {
+      "name": "inkwell-1.1.0.bin",
+      "browser_download_url": "https://example.invalid/inkwell-1.1.0.bin",
+      "size": 4980944,
+      "digest": "sha256:BDEBA0AD83590E888B794C4624BFEAFBDE3AA51D4D7192D594D471A6230508B2"
+    }
+  ]
+})";
+
+// GitHub reports a digest per asset; only the digest of the asset being
+// installed may be used, never a neighbour's.
+constexpr char inkwellReleaseDigestOnOtherAsset[] = R"({
+  "tag_name": "1.1.0",
+  "assets": [
+    {
+      "name": "SHA256SUMS",
+      "browser_download_url": "https://example.invalid/SHA256SUMS",
+      "size": 501,
+      "digest": "sha256:5ceb31de745b372e4eddd5a28b180482fc528838648edb767d4c09af347dbe98"
+    },
+    {
+      "name": "inkwell-1.1.0.bin",
+      "browser_download_url": "https://example.invalid/inkwell-1.1.0.bin",
+      "size": 4980944
+    }
+  ]
+})";
+
+constexpr char inkwellReleaseBadDigest[] = R"({
+  "tag_name": "1.1.0",
+  "assets": [
+    {
+      "name": "inkwell-1.1.0.bin",
+      "browser_download_url": "https://example.invalid/inkwell-1.1.0.bin",
+      "size": 4980944,
+      "digest": "sha256:not-a-hash"
+    }
+  ]
+})";
+
 std::unique_ptr<ReleaseJsonParser> parse(const std::string& json, size_t chunkSize = 0) {
   auto parser = std::make_unique<ReleaseJsonParser>();
   if (chunkSize == 0) {
@@ -123,6 +173,37 @@ TEST(ReleaseJsonParser, FindsInkwellAsset) {
   ASSERT_TRUE(parser->foundFirmware());
   EXPECT_STREQ(parser->getFirmwareUrl(), "https://github.com/mops1k/inkwell/releases/download/1.1.0/inkwell-1.1.0.bin");
   EXPECT_EQ(parser->getFirmwareSize(), 5003537u);
+}
+
+TEST(ReleaseJsonParser, UsesAssetDigestFromReleaseMetadata) {
+  const auto parser = parse(inkwellReleaseWithDigest);
+
+  ASSERT_TRUE(parser->foundFirmware());
+  ASSERT_TRUE(parser->foundDigest());
+  EXPECT_STRCASEEQ(parser->getFirmwareDigest(), "bdeba0ad83590e888b794c4624bfeafbde3aa51d4d7192d594d471a6230508b2");
+  EXPECT_EQ(std::strlen(parser->getFirmwareDigest()), 64u);
+}
+
+TEST(ReleaseJsonParser, IgnoresDigestOfOtherAssets) {
+  const auto parser = parse(inkwellReleaseDigestOnOtherAsset);
+
+  ASSERT_TRUE(parser->foundFirmware());
+  EXPECT_FALSE(parser->foundDigest());
+  EXPECT_STREQ(parser->getFirmwareDigest(), "");
+}
+
+TEST(ReleaseJsonParser, DropsMalformedDigest) {
+  const auto parser = parse(inkwellReleaseBadDigest);
+
+  ASSERT_TRUE(parser->foundFirmware());
+  EXPECT_FALSE(parser->foundDigest());
+}
+
+TEST(ReleaseJsonParser, ReportsNoDigestWhenReleaseHasNone) {
+  const auto parser = parse(inkwellRelease);
+
+  ASSERT_TRUE(parser->foundFirmware());
+  EXPECT_FALSE(parser->foundDigest());
 }
 
 TEST(ReleaseJsonParser, AcceptsLegacyFirmwareBin) {
