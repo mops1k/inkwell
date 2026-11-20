@@ -25,6 +25,8 @@
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <esp_wifi.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <wolfssl/wolfcrypt/sha256.h>
 // clang-format on
 
@@ -51,6 +53,14 @@ bool haveHeapForTls(const char* operation) {
     return false;
   }
   return true;
+}
+
+// The OTA session runs on the Arduino loop task, whose stack also carried the
+// WiFi association just before. Logging the high-water mark (minimum free stack
+// ever seen by this task) makes a future overflow visible in the crash report
+// instead of only after the fact.
+void logStackMargin(const char* stage) {
+  LOG_INF("OTA", "%s: stack high-water %u B free", stage, static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
 }
 
 // The manifest names assets by file name only; the release metadata carries the
@@ -237,6 +247,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
 
     updateAvailable = true;
 
+    logStackMargin("Update check");
     LOG_DBG("OTA", "Found %s update: %s", SETTINGS.includeBetaUpdates ? "beta" : "stable", latestVersion.c_str());
     return OK;
   }
@@ -608,6 +619,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::performInstallUpdateStep() {
   }
 
   LOG_INF("OTA", "Update completed (%zu bytes)", processedSize);
+  logStackMargin("Update install");
   installResult = OK;
   return installResult;
 }

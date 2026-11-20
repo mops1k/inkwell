@@ -60,6 +60,15 @@
 // Static-init heap probes bracketing this TU's globals (slots 4/5); see BootHeapProbe.h.
 static BootHeapProbe s_probeMainFirst(4);
 #endif
+
+// loop() runs the deepest non-render call chains on this board: WiFi association
+// (lwIP + wpa_supplicant) and, right after it, the OTA/HTTP session whose newlib
+// printf and wolfSSL handshake ride the same stack. The stock 8 KB overflowed in
+// the field — the crash report showed the fault inside snprintf/vfprintf with
+// Wi-Fi frames still on the stack below (plan p_09ab8e3e56a1). 16 KB keeps the
+// same margins the 10 KB render task has; it costs 8 KB of heap.
+SET_LOOP_TASK_STACK_SIZE(16384);
+
 MappedInputManager mappedInputManager(gpio);
 ButtonEventManager buttonEventManager(mappedInputManager);
 
