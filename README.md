@@ -62,6 +62,27 @@
 - Убраны Dropbox, погода и игры: интерфейс сведён к чтению и библиотеке.
 - Русский и английский интерфейс — [docs/i18n.md](docs/i18n.md).
 
+## Скриншоты
+
+Снято в эмуляторе X3 (`tools/qemu`) с этой прошивки, русский интерфейс. На демонстрационной
+карте шесть книг: с обложкой-картинкой с SD, со встроенной обложкой и без неё — последние
+показывают плашку с названием.
+
+<p align="center">
+  <img src="docs/images/inkwell-library-grid.png" width="30%" alt="Библиотека: плитки с обложками">
+  <img src="docs/images/inkwell-library-list.png" width="30%" alt="Библиотека: список из семи строк">
+  <img src="docs/images/inkwell-menu.png" width="30%" alt="Меню библиотеки">
+</p>
+<p align="center">
+  <img src="docs/images/inkwell-filters.png" width="30%" alt="Фильтры по автору, серии, жанру и формату">
+  <img src="docs/images/inkwell-sort-fields.png" width="30%" alt="Сортировка: выбор ключа">
+  <img src="docs/images/inkwell-sort-direction.png" width="30%" alt="Сортировка: направление">
+</p>
+<p align="center">
+  <img src="docs/images/inkwell-card-metadata.png" width="30%" alt="Карточка книги с годом, издателем и размером">
+  <img src="docs/images/inkwell-card-nocover.png" width="30%" alt="Карточка текстовой книги: заглушка «Нет обложки»">
+</p>
+
 ## Установка
 
 ### С SD-карты

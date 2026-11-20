@@ -212,7 +212,8 @@ def main() -> int:
     ap.add_argument("--out", default="build/qemu/sd.img")
     ap.add_argument("--size", default="64M", help="image size, e.g. 64M (default)")
     ap.add_argument("--add", action="append", default=[], metavar="HOST:GUEST",
-                    help="copy a host file to GUEST (only /books/... is placed in the FAT tree)")
+                    help="copy a host file to GUEST (/books/<name> or /.crosspoint/<name>);"
+                         " the second form seeds settings, the shelf state or a locale")
     args = ap.parse_args()
 
     size = args.size.strip().upper()
@@ -230,16 +231,18 @@ def main() -> int:
                  b"document on the card.\r\n")
     test_cluster = volume.store(test_data)
 
-    extra_books = []
+    extra_files = {"/books": [], "/.crosspoint": []}
     for spec in args.add:
         if ":" not in spec:
             raise SystemExit(f"--add wants HOST:GUEST, got {spec!r}")
         host, guest = spec.split(":", 1)
         with open(host, "rb") as fh:
             data = fh.read()
-        if guest.rsplit("/", 1)[0] != "/books":
-            raise SystemExit(f"--add: only /books/<name> is placed in the tree, got {guest!r}")
-        extra_books.append((guest.rsplit("/", 1)[1], volume.store(data), len(data)))
+        parent, _, name = guest.rpartition("/")
+        if parent not in extra_files or not name:
+            raise SystemExit(
+                f"--add: guest must be /books/<name> or /.crosspoint/<name>, got {guest!r}")
+        extra_files[parent].append((name, volume.store(data), len(data)))
 
     # Allocate the directories first, so "." can name its own cluster and ".."
     # can name the parent, then write the bodies in place.
@@ -249,12 +252,15 @@ def main() -> int:
     books_items = [(".", ATTR_DIR, books_cluster, 0), ("..", ATTR_DIR, 0, 0),
                    ("test.txt", ATTR_ARCHIVE, test_cluster, len(test_data))]
     books_items += [(name, ATTR_ARCHIVE, cluster, size_)
-                    for name, cluster, size_ in extra_books]
+                    for name, cluster, size_ in extra_files["/books"]]
     body = dir_body(books_items)
     volume.img[volume.cluster_offset(books_cluster):
                volume.cluster_offset(books_cluster) + len(body)] = body
 
-    cross_body = dir_body([(".", ATTR_DIR, cross_cluster, 0), ("..", ATTR_DIR, 0, 0)])
+    cross_items = [(".", ATTR_DIR, cross_cluster, 0), ("..", ATTR_DIR, 0, 0)]
+    cross_items += [(name, ATTR_ARCHIVE, cluster, size_)
+                    for name, cluster, size_ in extra_files["/.crosspoint"]]
+    cross_body = dir_body(cross_items)
     volume.img[volume.cluster_offset(cross_cluster):
                volume.cluster_offset(cross_cluster) + len(cross_body)] = cross_body
 
@@ -268,8 +274,9 @@ def main() -> int:
           f"partition @{PART_LBA}, data @{volume.data_lba}")
     print("  /books/test.txt")
     print("  /.crosspoint/")
-    for name, _, size_ in extra_books:
-        print(f"  /books/{name} ({size_} bytes)")
+    for parent, items in extra_files.items():
+        for name, _, size_ in items:
+            print(f"  {parent}/{name} ({size_} bytes)")
     return 0
 
 

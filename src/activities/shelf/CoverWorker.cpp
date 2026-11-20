@@ -18,7 +18,12 @@ namespace {
 
 constexpr UBaseType_t kRequestDepth = 8;
 constexpr UBaseType_t kResultDepth = 16;
-constexpr uint32_t kTaskStackBytes = 8192;
+// 8 KiB was enough for BMP and EPUB/FB2 artwork, but the PNG decoder for a
+// user cover from the SD card needs more: with 8 KiB the task overflowed its
+// stack and the board rebooted while the shelf was drawing covers. 16 KiB keeps
+// the whole pipeline (PNG included) inside the task; RAM headroom is unchanged
+// in practice (the firmware sits at ~17% of 320 KiB).
+constexpr uint32_t kTaskStackBytes = 16384;
 constexpr UBaseType_t kTaskPriority = 1;
 
 // One finished cover, copied through the queue. Fixed size on purpose: the task

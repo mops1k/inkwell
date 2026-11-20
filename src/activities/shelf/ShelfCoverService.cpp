@@ -23,6 +23,17 @@ std::string thumbPathFor(const std::string& bookPath, shelf::ShelfCoverSize size
 // per book instead of on every visit.
 constexpr const char* kCellCropMarker = ".covercrop1";
 
+// A book without artwork gets no synthetic bitmap: the grid and the card draw
+// their own titled plate (and the card adds "no cover" underneath), while the
+// white placeholder BMP this used to leave behind only ever looked like an empty
+// frame. The 0-byte file is the existing "structurally absent" sentinel, so the
+// verdict costs nothing on later passes and no book has to be read again.
+void settleWithoutCover(const std::string& thumbPath) {
+  if (Storage.exists(thumbPath.c_str())) Storage.remove(thumbPath.c_str());
+  HalFile file;
+  if (Storage.openFileForWrite("SHELF", thumbPath, file)) file.close();
+}
+
 void dropLetterboxedCellThumb(const std::string& bookPath, const std::string& thumbPath) {
   const std::string cacheDir = ReaderActivity::bookCacheDir(bookPath);
   if (cacheDir.empty()) return;
@@ -108,7 +119,8 @@ std::string ShelfCoverService::ensureCover(const std::string& bookPath, shelf::S
     case shelf::CoverDecision::RetryLater:
       return {};
     case shelf::CoverDecision::Placeholder:
-      return ReaderActivity::writeCoverPlaceholderBmp(thumbPath, box.width, box.height) ? thumbPath : std::string();
+      settleWithoutCover(thumbPath);
+      return {};
     case shelf::CoverDecision::Generate:
       break;
   }
@@ -122,9 +134,10 @@ std::string ShelfCoverService::ensureCover(const std::string& bookPath, shelf::S
       if (attempt != nullptr) attempt->transientAttempts = 0;
       return thumbPath;
     case shelf::CoverDecision::Placeholder:
-      // Settle on a valid placeholder instead of retrying forever. The book
-      // stays visible; only its cover is generic.
-      return ReaderActivity::writeCoverPlaceholderBmp(thumbPath, box.width, box.height) ? thumbPath : std::string();
+      // Settle on a valid plate instead of retrying forever: the book stays
+      // visible with its title, only the artwork is absent.
+      settleWithoutCover(thumbPath);
+      return {};
     case shelf::CoverDecision::Generate:
     case shelf::CoverDecision::RetryLater:
       break;
