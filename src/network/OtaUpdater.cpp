@@ -1,12 +1,16 @@
-#include "BootHealth.h"
 #include "OtaUpdater.h"
 
 #include <Arduino.h>
+#include <FirmwareManifestParser.h>
+#include <HalGPIO.h>
 #include <Logging.h>
 #include <ReleaseJsonParser.h>
 
+#include <cctype>
 #include <cstdio>
 #include <cstring>
+
+#include "BootHealth.h"
 
 // clang-format off
 // HttpDownloader.h pulls Arduino/SdFat, whose macros collide with lwip's
@@ -21,6 +25,7 @@
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <esp_wifi.h>
+#include <wolfssl/wolfcrypt/sha256.h>
 // clang-format on
 
 namespace {
@@ -29,8 +34,54 @@ constexpr char releaseListUrl[] = "https://api.github.com/repos/" CROSSPOINT_GIT
 constexpr int otaHttpMaxAttempts = 3;
 constexpr unsigned long otaInitialRetryDelayMs = 1000;
 constexpr size_t releaseMetadataMaxBytes = 128 * 1024;
+constexpr size_t sha256HexLength = 64;
 
 const char* getReleaseApiUrl() { return SETTINGS.includeBetaUpdates ? releaseListUrl : latestReleaseUrl; }
+
+// The manifest names assets by file name only; the release metadata carries the
+// full download URL. Comparing the URL's last path segment keeps both sides
+// honest: the verified hash must describe the file that is actually streamed.
+const char* pathBasename(const char* path) {
+  if (!path) return "";
+  const char* slash = strrchr(path, '/');
+  return slash ? slash + 1 : path;
+}
+
+bool assetNameMatches(const char* url, const char* fileName) {
+  if (!fileName || *fileName == '\0') return false;
+  return strcmp(pathBasename(url), fileName) == 0;
+}
+
+// Defence in depth behind the manifest hash: the image in the update slot must
+// identify itself as an Inkwell build and carry the version the release claims.
+// The Arduino-ESP32 builds this project ships with an empty app descriptor
+// (verified on the 1.0.0 image), so an empty field is treated as "legacy, not
+// verifiable here" instead of failing every install — the SHA-256 from the
+// signed-release manifest is the binding check. Once the descriptor is
+// populated at build time these comparisons tighten on their own.
+bool imageDescriptionMatches(const esp_partition_t* partition, const std::string& expectedVersion) {
+  esp_app_desc_t description{};
+  const esp_err_t err = esp_ota_get_partition_description(partition, &description);
+  if (err != ESP_OK) {
+    LOG_ERR("OTA", "cannot read image description: %s", esp_err_to_name(err));
+    return false;
+  }
+
+  const bool hasProject = description.project_name[0] != '\0';
+  const bool hasVersion = description.version[0] != '\0';
+  LOG_INF("OTA", "image in update slot: project=%s version=%s", hasProject ? description.project_name : "<none>",
+          hasVersion ? description.version : "<none>");
+
+  if (hasProject && strcasecmp(description.project_name, "Inkwell") != 0) {
+    LOG_ERR("OTA", "image belongs to another project: %s", description.project_name);
+    return false;
+  }
+  if (hasVersion && expectedVersion != description.version) {
+    LOG_ERR("OTA", "image version %s does not match release %s", description.version, expectedVersion.c_str());
+    return false;
+  }
+  return true;
+}
 
 void delayBeforeRetry(const char* operation, int attempt) {
   const unsigned long delayMs = otaInitialRetryDelayMs << static_cast<unsigned int>(attempt - 1);
@@ -77,7 +128,8 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
             return false;
           }
           releaseParser.feed(reinterpret_cast<const char*>(data), len);
-          // For OTA metadata we only need tag_name and firmware.bin fields.
+          // For OTA metadata we only need tag_name and the firmware asset
+          // fields (inkwell-<version>.bin, or upstream's firmware.bin).
           // Stop early once both are found to avoid fragile tail reads.
           if (releaseParser.foundTag() && releaseParser.foundFirmware()) {
             return false;
@@ -106,14 +158,53 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
     }
 
     if (!releaseParser.foundFirmware()) {
-      LOG_ERR("OTA", "No firmware.bin asset found");
+      LOG_ERR("OTA", "No firmware asset in release metadata (inkwell-<version>.bin or firmware.bin)");
       return NO_UPDATE;
+    }
+
+    if (!releaseParser.foundManifest()) {
+      LOG_ERR("OTA", "No firmware-manifest.json asset in release metadata");
+      return MANIFEST_MISSING;
     }
 
     latestVersion = releaseParser.getTagName();
     otaUrl = releaseParser.getFirmwareUrl();
     otaSize = releaseParser.getFirmwareSize();
     totalSize = otaSize;
+
+    // The manifest pins the SHA-256 of the image built for this board; without
+    // a usable entry the release is not installed (fail closed, no downgrade of
+    // verification to TLS alone).
+    const char* board = gpio.deviceIsX3() ? "X3" : "X4";
+    const char* supportedBoards[] = {board};
+    FirmwareManifestParser manifestParser(supportedBoards, 1);
+    const bool manifestOk = HttpDownloader::fetchUrl(
+        releaseParser.getManifestUrl(),
+        [&manifestParser](const uint8_t* data, size_t len) {
+          manifestParser.feed(reinterpret_cast<const char*>(data), len);
+          return true;
+        },
+        /*verifyTls=*/true);
+    if (!manifestOk) {
+      LOG_ERR("OTA", "firmware-manifest.json download failed");
+      return HTTP_ERROR;
+    }
+    if (!manifestParser.hasSelected()) {
+      LOG_ERR("OTA", "firmware-manifest.json has no application for %s", board);
+      return MANIFEST_INVALID;
+    }
+    expectedSha256 = manifestParser.selectedSha256();
+    expectedFileName = manifestParser.selectedFile();
+    if (!assetNameMatches(otaUrl.c_str(), expectedFileName.c_str())) {
+      LOG_ERR("OTA", "manifest names %s but the release asset is %s", expectedFileName.c_str(),
+              pathBasename(otaUrl.c_str()));
+      return MANIFEST_INVALID;
+    }
+    if (otaSize != 0 && manifestParser.selectedBytes() != 0 && otaSize != manifestParser.selectedBytes()) {
+      LOG_ERR("OTA", "manifest size %zu does not match asset size %zu", manifestParser.selectedBytes(), otaSize);
+      return MANIFEST_INVALID;
+    }
+
     updateAvailable = true;
 
     LOG_DBG("OTA", "Found %s update: %s", SETTINGS.includeBetaUpdates ? "beta" : "stable", latestVersion.c_str());
@@ -351,6 +442,15 @@ OtaUpdater::OtaUpdaterError OtaUpdater::performInstallUpdateStep() {
   bool userCancelled = false;
   HttpDownloader::VerifiedFetchStatus downloadStatus;
 
+  if (expectedSha256.size() != sha256HexLength) {
+    LOG_ERR("OTA", "No expected SHA-256 from the release manifest");
+    cleanupUpdate();
+    installResult = MANIFEST_INVALID;
+    return installResult;
+  }
+  wc_Sha256 sha256;
+  wc_InitSha256(&sha256);
+
   // Verify-only (fail closed): a MITM must not be able to downgrade the firmware
   // download to an unverified connection by presenting a bad cert.
   const bool fetchOk = HttpDownloader::fetchUrlVerified(
@@ -364,6 +464,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::performInstallUpdateStep() {
           writeOk = false;
           return false;  // abort
         }
+        wc_Sha256Update(&sha256, data, static_cast<word32>(len));
         processedSize += len;
         render = true;
         // Let the host redraw progress and poll for Back; abort if it returns false.
@@ -401,6 +502,28 @@ OtaUpdater::OtaUpdaterError OtaUpdater::performInstallUpdateStep() {
     return installResult;
   }
 
+  // The image is already in the update slot, but the boot partition is not
+  // switched yet: a hash mismatch aborts here, so a corrupted or swapped asset
+  // never becomes bootable.
+  uint8_t digest[WC_SHA256_DIGEST_SIZE];
+  if (wc_Sha256Final(&sha256, digest) != 0) {
+    LOG_ERR("OTA", "SHA-256 finalization failed");
+    cleanupUpdate();
+    installResult = INTERNAL_UPDATE_ERROR;
+    return installResult;
+  }
+  char actualSha256[sha256HexLength + 1];
+  firmware_manifest::formatSha256Hex(digest, sizeof(digest), actualSha256, sizeof(actualSha256));
+  if (!firmware_manifest::sha256HexEquals(actualSha256, expectedSha256.c_str())) {
+    char details[96];
+    snprintf(details, sizeof(details), "SHA256 %s != %s", actualSha256, expectedSha256.c_str());
+    downloadErrorDetails = details;
+    LOG_ERR("OTA", "SHA-256 mismatch: expected %s, got %s", expectedSha256.c_str(), actualSha256);
+    cleanupUpdate();
+    installResult = VALIDATE_FAILED;
+    return installResult;
+  }
+
   esp_err_t finish_err = esp_ota_end(handle);
   otaWriteHandle = nullptr;
   if (finish_err != ESP_OK && finish_err != ESP_ERR_OTA_VALIDATE_FAILED) {
@@ -409,10 +532,22 @@ OtaUpdater::OtaUpdaterError OtaUpdater::performInstallUpdateStep() {
     return installResult;
   }
 
+  // The image is written and structurally validated; before it can become
+  // bootable, confirm it identifies itself as this project at this version.
+  const esp_partition_t* updatePartition = esp_ota_get_next_update_partition(nullptr);
+  if (updatePartition == nullptr) {
+    LOG_ERR("OTA", "no next OTA partition after install");
+    installResult = INTERNAL_UPDATE_ERROR;
+    return installResult;
+  }
+  if (!imageDescriptionMatches(updatePartition, latestVersion)) {
+    installResult = VALIDATE_FAILED;
+    return installResult;
+  }
+
   // Set the new partition as boot. Arduino unsigned builds fail image_validate()
   // in esp_ota_set_boot_partition (and esp_ota_end returns VALIDATE_FAILED), so
   // fall back to writing otadata directly — same bypass as before.
-  const esp_partition_t* updatePartition = esp_ota_get_next_update_partition(nullptr);
   if (!boot_health::stageUpdate(updatePartition)) {
     LOG_ERR("OTA", "Cannot persist update recovery record");
     installResult = INTERNAL_UPDATE_ERROR;

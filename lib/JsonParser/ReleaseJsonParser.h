@@ -19,9 +19,12 @@ class ReleaseJsonParser {
 
   bool foundTag() const;
   bool foundFirmware() const;
+  bool foundManifest() const;
   const char* getTagName() const;
   const char* getFirmwareUrl() const;
   size_t getFirmwareSize() const;
+  const char* getManifestUrl() const;
+  size_t getManifestSize() const;
 
  private:
   bool inReleaseObject() const;
@@ -65,6 +68,16 @@ class ReleaseJsonParser {
   size_t firmwareSize;
   bool tagFound;
   bool firmwareFound;
+  // Our releases publish `inkwell-<version>.bin`; upstream ones publish
+  // `firmware.bin`. Prefer the Inkwell asset when a release carries both, so a
+  // fork release with a mirrored upstream asset still installs our image.
+  bool firmwarePreferred;
+
+  // firmware-manifest.json names the image for each board and pins its
+  // SHA-256; the installer refuses to run without it.
+  char manifestUrl[512];
+  size_t manifestSize;
+  bool manifestFound;
 
   char currentAssetName[32];
   char currentAssetUrl[512];

@@ -3,8 +3,12 @@
 #include <functional>
 #include <string>
 
+// OTA only from our own release channel (AGENTS.md, anti-brick invariant 4).
+// Upstream releases (Kapfilm/Paperio-Reader) must never be offered: their
+// version numbers are higher and their images are not Inkwell builds. Build
+// flags may still override this single definition for a staging channel.
 #ifndef CROSSPOINT_GIT_REPOSITORY
-#define CROSSPOINT_GIT_REPOSITORY "Kapfilm/Paperio-Reader"
+#define CROSSPOINT_GIT_REPOSITORY "mops1k/inkwell"
 #endif
 
 class OtaUpdater {
@@ -28,6 +32,8 @@ class OtaUpdater {
     INTERNAL_UPDATE_ERROR,
     OOM_ERROR,
     METADATA_TOO_LARGE_ERROR,
+    MANIFEST_MISSING,
+    MANIFEST_INVALID,
     UPDATE_CANCELLED,
     UPDATE_IN_PROGRESS,
     VALIDATE_FAILED,
@@ -64,6 +70,11 @@ class OtaUpdater {
  private:
   static int forceSetOtaBootPartition();
   InstallProgressFn installProgressCb;
+  // Expected image identity, taken from firmware-manifest.json during the
+  // update check: the asset is only flashed when the streamed SHA-256 matches
+  // and the manifest names the asset that is actually downloaded.
+  std::string expectedSha256;
+  std::string expectedFileName;
   // Opaque esp_ota handle for the streaming install (void* avoids including
   // esp_ota_ops.h in the header). Set by beginInstallUpdate, consumed by the step.
   void* otaWriteHandle = nullptr;

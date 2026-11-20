@@ -92,6 +92,10 @@ add_subdirectory(boot_health)
 
 add_subdirectory(firmware_image)
 
+# OTA release metadata (plan p_09ab8e3e56a1, Ф1): asset selection for the
+# Inkwell release channel and upstream's legacy firmware.bin name.
+add_subdirectory(ota_release)
+
 add_subdirectory(reader_font_size)
 
 add_subdirectory(sd_font_size)

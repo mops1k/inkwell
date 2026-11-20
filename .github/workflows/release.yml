@@ -2,9 +2,14 @@ name: Release
 
 # Publishing rule:
 #   * a tag like 0.2.0 (no "v" prefix) builds the release image and publishes a
-#     GitHub Release with firmware.bin + SHA256SUMS;
+#     GitHub Release with the board images, firmware-manifest.json, SHA256SUMS
+#     and the debug artifacts (bootloader/partitions/elf/map);
 #   * a manual run does the same for a version typed into the form, and can create
 #     the tag itself when it does not exist yet.
+#
+# The device installs an update only when firmware-manifest.json names the asset
+# it downloads for its board and the streamed SHA-256 matches (see
+# src/network/OtaUpdater.cpp), so the manifest step is part of the release gate.
 #
 # The version string is injected through CROSSPOINT_RELEASE_VERSION, which
 # scripts/git_branch.py reads for the gh_release environment — the same mechanism
@@ -22,6 +27,11 @@ on:
         type: string
       prerelease:
         description: "Mark the GitHub release as a pre-release"
+        required: false
+        default: false
+        type: boolean
+      hardware_tested:
+        description: "Set hardware_tested in firmware-manifest.json (image already runs on a real X3/X4)"
         required: false
         default: false
         type: boolean
@@ -103,20 +113,52 @@ jobs:
           CROSSPOINT_RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: pio run -e gh_release
 
-      - name: Collect image and checksum
+      - name: Collect release assets and checksum
         id: assets
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          IMAGE=.pio/build/gh_release/firmware.bin
+          BUILD=.pio/build/gh_release
+          IMAGE="${BUILD}/firmware.bin"
           test -s "$IMAGE"
           mkdir -p dist
+
+          # One image for X3 and X4: both FreeInk profiles are compiled in and the
+          # board is detected at runtime, so the model-named files upstream ships
+          # are aliases of the same bytes. `firmware.bin` keeps tooling that
+          # expects the upstream name working.
           cp "$IMAGE" "dist/inkwell-${VERSION}.bin"
+          cp "$IMAGE" "dist/firmware.bin"
+          cp "$IMAGE" "dist/firmware-x3.bin"
+          cp "$IMAGE" "dist/firmware-x4.bin"
+
+          # Debug/verification artifacts, same set as upstream publishes.
+          for artifact in bootloader.bin partitions.bin firmware.elf firmware.map; do
+            test -s "${BUILD}/${artifact}"
+            cp "${BUILD}/${artifact}" "dist/${artifact}"
+          done
+
           (cd dist && sha256sum ./*.bin > SHA256SUMS)
           cat dist/SHA256SUMS
           echo "image=dist/inkwell-${VERSION}.bin" >> "$GITHUB_OUTPUT"
           echo "sums=dist/SHA256SUMS" >> "$GITHUB_OUTPUT"
+
+      - name: Generate firmware manifest
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          HARDWARE_TESTED: ${{ inputs.hardware_tested && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          # Verifies SHA256SUMS against the files and aborts the release on any
+          # mismatch, so a published manifest always matches the published bytes.
+          python3 scripts/generate_manifest.py \
+            --dist dist \
+            --version "${VERSION}" \
+            --source-commit "$(git rev-parse HEAD)" \
+            --devices X3 X4 \
+            --hardware-tested "${HARDWARE_TESTED}"
+          cat dist/firmware-manifest.json
 
       - name: Generate release notes
         env:

@@ -11,6 +11,21 @@ void safeCopy(char* dst, size_t dstSize, const char* src, size_t srcLen) {
   dst[n] = '\0';
 }
 
+constexpr char inkwellAssetPrefix[] = "inkwell-";
+constexpr char binAssetSuffix[] = ".bin";
+
+bool hasSuffix(const char* text, const char* suffix) {
+  const size_t textLen = strlen(text);
+  const size_t suffixLen = strlen(suffix);
+  return textLen >= suffixLen && strcmp(text + textLen - suffixLen, suffix) == 0;
+}
+
+// Inkwell release images are named `inkwell-<version>.bin` by
+// .github/workflows/release.yml. Anything else with .bin is not our firmware.
+bool isInkwellAsset(const char* name) {
+  return strncmp(name, inkwellAssetPrefix, sizeof(inkwellAssetPrefix) - 1) == 0 && hasSuffix(name, binAssetSuffix);
+}
+
 }  // namespace
 
 ReleaseJsonParser::ReleaseJsonParser()
@@ -30,6 +45,10 @@ void ReleaseJsonParser::reset() {
   firmwareSize = 0;
   tagFound = false;
   firmwareFound = false;
+  firmwarePreferred = false;
+  manifestUrl[0] = '\0';
+  manifestSize = 0;
+  manifestFound = false;
   topLevelArray = false;
   currentAssetName[0] = '\0';
   currentAssetUrl[0] = '\0';
@@ -47,15 +66,35 @@ void ReleaseJsonParser::feed(const char* data, size_t len) { parser.feed(data, l
 
 bool ReleaseJsonParser::foundTag() const { return tagFound; }
 bool ReleaseJsonParser::foundFirmware() const { return firmwareFound; }
+bool ReleaseJsonParser::foundManifest() const { return manifestFound; }
 const char* ReleaseJsonParser::getTagName() const { return tagName; }
 const char* ReleaseJsonParser::getFirmwareUrl() const { return firmwareUrl; }
 size_t ReleaseJsonParser::getFirmwareSize() const { return firmwareSize; }
+const char* ReleaseJsonParser::getManifestUrl() const { return manifestUrl; }
+size_t ReleaseJsonParser::getManifestSize() const { return manifestSize; }
 
 void ReleaseJsonParser::commitAsset() {
-  if (strcmp(currentAssetName, "firmware.bin") == 0) {
-    memcpy(firmwareUrl, currentAssetUrl, sizeof(firmwareUrl));
+  if (strcmp(currentAssetName, "firmware-manifest.json") == 0) {
+    const size_t urlLen = strlen(currentAssetUrl);
+    const size_t copyLen = urlLen < sizeof(manifestUrl) - 1 ? urlLen : sizeof(manifestUrl) - 1;
+    memcpy(manifestUrl, currentAssetUrl, copyLen);
+    manifestUrl[copyLen] = '\0';
+    manifestSize = currentAssetSize;
+    manifestFound = true;
+  }
+
+  const bool inkwellAsset = isInkwellAsset(currentAssetName);
+  const bool legacyAsset = strcmp(currentAssetName, "firmware.bin") == 0;
+  // Prefer the Inkwell asset: a release that mirrors upstream's firmware.bin
+  // must not shadow our image regardless of the order GitHub lists assets in.
+  if (inkwellAsset || (legacyAsset && !firmwarePreferred)) {
+    const size_t urlLen = strlen(currentAssetUrl);
+    const size_t copyLen = urlLen < sizeof(firmwareUrl) - 1 ? urlLen : sizeof(firmwareUrl) - 1;
+    memcpy(firmwareUrl, currentAssetUrl, copyLen);
+    firmwareUrl[copyLen] = '\0';
     firmwareSize = currentAssetSize;
     firmwareFound = true;
+    firmwarePreferred = inkwellAsset;
   }
   currentAssetName[0] = '\0';
   currentAssetUrl[0] = '\0';

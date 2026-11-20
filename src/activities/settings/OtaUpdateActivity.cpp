@@ -171,6 +171,12 @@ void OtaUpdateActivity::render(RenderLock&&) {
       case OtaUpdater::METADATA_TOO_LARGE_ERROR:
         reason = tr(STR_RELEASE_METADATA_TOO_LARGE);
         break;
+      case OtaUpdater::MANIFEST_MISSING:
+        reason = "Release has no firmware manifest";
+        break;
+      case OtaUpdater::MANIFEST_INVALID:
+        reason = "Manifest does not verify this image";
+        break;
       case OtaUpdater::INTERNAL_UPDATE_ERROR:
         reason = "Internal update error";
         break;
